@@ -1,0 +1,18 @@
+# deps / build
+node_modules/
+app/dist/
+analysis/.venv/
+__pycache__/
+
+# heavy or derived audio (re-create with analysis/separate.py)
+analysis/stems/
+analysis/work/
+
+# the song itself is not published by default (repo is public)
+audio/*.mp3
+audio/*.wav
+
+# render outputs
+out/
+
+.DS_Store
