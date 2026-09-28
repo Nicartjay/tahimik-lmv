@@ -51,7 +51,13 @@ node scripts/render.ts sheet --n 24                 # contact sheet → out/shee
 node scripts/render.ts bench                        # ms/frame for every plate and crossfade
 ```
 
-A full 4-sample render takes roughly 12 minutes on an M4.
+A full 4-sample render takes about 23 minutes on an M4 and writes a ~2.7 GB master
+(the film grain keeps crf 16 near 100 Mbit/s). For uploading, re-encode a delivery copy:
+
+```sh
+ffmpeg -i out/tahimik.mp4 -c:v libx264 -preset slow -tune grain -crf 18 -maxrate 16M -bufsize 32M \
+  -c:a copy -movflags +faststart out/tahimik_share.mp4
+```
 
 Options: `--scale 2` (4K), `--fps`, `--samples` (motion-blur sub-frames, default 4 for
 video, 1 for stills), `--shutter 0.5`, `--crf 16`, `--preset slow`, `--only a,b`,

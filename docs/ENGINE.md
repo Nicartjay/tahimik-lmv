@@ -64,5 +64,7 @@ flight; the server re-orders them and streams them into ffmpeg (`vflip`, bt709, 
 AAC 320k muxed from `audio/Tahimik.mp3`).
 
 The POST body must be a `Blob`: Chrome uploads a typed-array body at ~30 MB/s (3 fps at
-1080p) and a Blob at >1 GB/s. With that, a 4-sample 1080p60 export runs at ~20 fps on an
-M4; `node scripts/render.ts bench` prints the per-plate cost if a scene gets heavy.
+1080p) and a Blob at >1 GB/s. With that, the full 4-sample 1080p60 export averages ~9.5 fps
+on an M4 (12 895 frames in 23 min), with ffmpeg's x264 `slow` encode of the grain using
+~9 cores; `node scripts/render.ts bench` prints the per-plate render cost if a scene gets
+heavy.
