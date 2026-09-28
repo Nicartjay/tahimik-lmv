@@ -235,7 +235,10 @@ export function text(
   c.textAlign = 'left';
 }
 
-/** typewriter reveal: first n chars (fractional n fades the last char in) */
+/**
+ * typewriter reveal: first n chars (fractional n fades the last char in).
+ * Sets globalAlpha itself (and resets it to 1), so fade the text with `alpha`, not the context.
+ */
 export function typed(
   c: CanvasRenderingContext2D,
   s: string,

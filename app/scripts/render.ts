@@ -4,6 +4,7 @@
 //   node scripts/render.ts --from 40 --to 60       a range     → out/tahimik_40-60.mp4
 //   node scripts/render.ts stills --t 12,45.5      PNG stills  → out/stills/
 //   node scripts/render.ts sheet --n 24 [--from --to | --t a,b,c]  contact sheet → out/sheet.png
+//   node scripts/render.ts bench [--samples 4] [--t a,b,c]   ms/frame per plate and per crossfade
 //
 // Frames leave the page as raw RGBA (bottom-up) via POST /__frame, are re-ordered here
 // and piped to ffmpeg's stdin; the song is muxed from ../audio.
@@ -43,8 +44,8 @@ const { positionals, values: V } = parseArgs({
   },
 });
 const mode = positionals[0] ?? 'video';
-if (!['video', 'stills', 'sheet'].includes(mode)) {
-  console.error(`unknown mode "${mode}" (video | stills | sheet)`);
+if (!['video', 'stills', 'sheet', 'bench'].includes(mode)) {
+  console.error(`unknown mode "${mode}" (video | stills | sheet | bench)`);
   process.exit(2);
 }
 const num = (s: string | undefined, d: number) => (s === undefined ? d : Number(s));
@@ -99,7 +100,8 @@ const server = await createServer({
   root: app,
   configFile: join(app, 'vite.config.ts'),
   plugins: [frameSink()],
-  server: { port: 0, strictPort: false },
+  // no HMR / watching: a file saved mid-render must never reload the page under us
+  server: { port: 0, strictPort: false, hmr: false, watch: null },
   logLevel: 'warn',
 });
 await server.listen();
@@ -162,6 +164,23 @@ try {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, Buffer.from(url.split(',')[1], 'base64'));
     console.log(file);
+  } else if (mode === 'bench') {
+    // default: the middle of every plate and the centre of every crossfade
+    const entries: { start: number; end: number }[] = await page.evaluate(() => (window as any).__tahimik.entries);
+    const ts = V.t
+      ? V.t.split(',').map(Number)
+      : entries.flatMap((e, i) => [(e.start + e.end) / 2, ...(i ? [e.start + (entries[i - 1].end - e.start) / 2] : [])]).sort((a, b) => a - b);
+    const rows: { t: number; label: string; live: number; render: number; read: number }[] = await page.evaluate(
+      ([ts, s]) => (window as any).__tahimik.bench(ts, s),
+      [ts, samples] as const,
+    );
+    let sum = 0;
+    for (const r of rows) {
+      sum += r.render + r.read;
+      console.log(`${r.t.toFixed(2).padStart(7)}  ${r.live === 2 ? '×' : ' '} ${r.label.padEnd(26)} ${r.render.toFixed(1).padStart(7)} ms  read ${r.read.toFixed(1)} ms`);
+    }
+    const avg = sum / rows.length;
+    console.log(`mean ${avg.toFixed(1)} ms/frame @ ${samples} samples → ~${((avg * info.duration * fps) / 60000).toFixed(0)} min for the song at ${fps} fps (before encode)`);
   } else {
     const [w, h] = info.size;
     const file = V.out ?? join(outDir, from === 0 && to === info.duration ? 'tahimik.mp4' : `tahimik_${from}-${to}.mp4`);

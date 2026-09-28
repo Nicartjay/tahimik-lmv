@@ -4,7 +4,7 @@ import { AudioData, type AudioJSON } from './engine/audio';
 import { EXPORT, FPS, H, PH, PW, W } from './engine/config';
 import { Engine } from './engine/engine';
 import { loadFonts } from './engine/fonts';
-import { initGL, rendererInfo } from './engine/gl';
+import { gl, initGL, rendererInfo } from './engine/gl';
 import { Lyrics } from './engine/lyrics';
 import { registry } from './scenes/index';
 import { buildTimeline } from './timeline';
@@ -66,6 +66,27 @@ function exposeApi(engine: Engine) {
       return sc.toDataURL('image/png');
     },
 
+    /** ms per frame at each t, GPU-synced: render (scenes + post + HUD) and readPixels */
+    bench(times: number[], samples = 1, reps = 4) {
+      const buf = new Uint8Array(PW * PH * 4), px = new Uint8Array(4);
+      const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return times.map((t) => {
+        engine.render(t, samples);
+        sync();
+        let render = 0, read = 0;
+        for (let k = 1; k <= reps; k++) {
+          const a = performance.now();
+          engine.render(t + k / FPS, samples);
+          sync();
+          const b = performance.now();
+          engine.read(buf);
+          render += b - a;
+          read += performance.now() - b;
+        }
+        return { t, label: engine.current(t)?.label ?? '', live: engine.active(t).length, render: render / reps, read: read / reps };
+      });
+    },
+
     /** render frames [from, to) and POST them in order to /__frame; returns frame count */
     async exportRange(from: number, to: number, samples = 1, shutter = 0.5): Promise<number> {
       const f0 = Math.round(from * FPS), f1 = Math.round(to * FPS);
@@ -79,10 +100,12 @@ function exposeApi(engine: Engine) {
         await inflight[k];
         engine.render((f0 + i) / FPS, samples, shutter);
         engine.read(bufs[k]);
+        // a Blob body, not the typed array: Chrome streams an ArrayBufferView upload at ~30 MB/s,
+        // a Blob at >1 GB/s (and the Blob's copy frees bufs[k] for reuse straight away)
         inflight[k] = fetch('/__frame', {
           method: 'POST',
           headers: { 'x-frame': String(i), 'content-type': 'application/octet-stream' },
-          body: bufs[k],
+          body: new Blob([bufs[k]]),
         }).then((r) => {
           if (!r.ok) throw new Error(`frame ${i}: HTTP ${r.status}`);
         });

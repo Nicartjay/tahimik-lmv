@@ -5,7 +5,7 @@ import { defineConfig, type Plugin } from 'vite';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
-/** serve ../audio/* at /media/* (kept out of the bundle; the song is gitignored) */
+/** serve ../audio/* at /media/* (streamed with Range support, kept out of the bundle) */
 const media = (): Plugin => ({
   name: 'tahimik-media',
   configureServer(server) {

@@ -221,12 +221,15 @@ export function firefly(g: CanvasRenderingContext2D, x: number, y: number, o: Fl
   const I = Math.max(0, (o.I ?? 1) * (1 - fl + fl * (0.5 + 0.5 * noise1(t * 1.3, o.seed ?? 0))));
   if (I <= 0.002) return;
   const blob = (rad: number, col: string, a: number) => {
-    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+    // a linear ramp to 0 at `rad` leaves a visible disc edge once the glow gain lifts it, so
+    // the tail eases into 0 instead, reaching 25% further to keep about the same light inside
+    const R = rad * 1.25;
+    const gr = g.createRadialGradient(x, y, 0, x, y, R);
     gr.addColorStop(0, rgba(col, clamp(a)));
-    gr.addColorStop(0.35, rgba(col, clamp(a * 0.45)));
+    for (const s of [0.35, 0.5, 0.65, 0.8, 0.9]) gr.addColorStop(s, rgba(col, clamp(a * 0.45 * ((1 - s) / 0.65) ** 1.8)));
     gr.addColorStop(1, rgba(col, 0));
     g.fillStyle = gr;
-    g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    g.fillRect(x - R, y - R, R * 2, R * 2);
   };
   blob(90 * r * (0.6 + 0.4 * I), 'ember', 0.16 * I);
   blob(26 * r, 'glow', 0.55 * I);

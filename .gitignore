@@ -8,8 +8,7 @@ __pycache__/
 analysis/stems/
 analysis/work/
 
-# the song itself is not published by default (repo is public)
-audio/*.mp3
+# the song (audio/Tahimik.mp3) is published with the repo; uncompressed bounces are not
 audio/*.wav
 
 # render outputs

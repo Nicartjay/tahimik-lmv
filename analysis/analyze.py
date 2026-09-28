@@ -1,7 +1,8 @@
 """Audio analysis -> data/audio.json
 
-Tempo + a constant beat grid, downbeats, onset events per stem (kick / snare /
-hat / vocal) and 0..255 loudness envelopes sampled at ENV_FPS.
+Tempo + a DP-tracked, locally smoothed beat grid (the song drifts ~92 → ~90 BPM),
+downbeats, onset events per stem (kick / snare / hat / vocal) and 0..255 loudness
+envelopes sampled at ENV_FPS.
 
     uv run python analyze.py
 """
