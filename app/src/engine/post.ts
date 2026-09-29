@@ -56,14 +56,17 @@ void main() {
   fragColor = vec4(c / 16., 1.);
 }`;
 
+/** the tone curve: linear below k, a soft exponential shoulder above (shared with the sampler) */
+export const GLSL_SHOULDER = /* glsl */ `vec3 shoulder(vec3 x) {
+  const float k = .78;
+  return mix(x, k + (1. - k) * (1. - exp(-(x - k) / (1. - k))), step(k, x));
+}`;
+
 const FINAL = /* glsl */ `
 uniform sampler2D uScene, uBloom;
 uniform float uExposure, uBloomStr, uGrain, uVignette, uCA, uFade, uFlash, uZoom, uFrame;
 uniform vec2 uShake;
-vec3 shoulder(vec3 x) {
-  const float k = .78;
-  return mix(x, k + (1. - k) * (1. - exp(-(x - k) / (1. - k))), step(k, x));
-}
+${GLSL_SHOULDER}
 void main() {
   vec2 uv = (vUv - .5) / uZoom + .5 + vec2(-uShake.x, uShake.y) / vec2(${W}., ${H}.);
   vec2 d = uv - .5;

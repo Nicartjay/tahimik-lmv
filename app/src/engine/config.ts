@@ -9,6 +9,8 @@ export const PW = W * SCALE;
 export const PH = H * SCALE;
 export const FPS = Number(q.get('fps') ?? 60);
 export const EXPORT = q.has('export');
+/** which film to play: 'lmv' (the lyric video) or 'mv' (the music video) */
+export const FILM = q.get('film') ?? 'lmv';
 /** only render these timeline entries (comma list of scene names), for fast isolated work */
 export const ONLY = (q.get('only') ?? '').split(',').filter(Boolean);
 

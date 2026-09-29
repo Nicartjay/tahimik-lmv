@@ -2,6 +2,10 @@ import { H, PH, PW, SCALE, W } from './config';
 import { GLSL_PALETTE } from './palette';
 
 export let gl: WebGL2RenderingContext;
+/** the attribute-less VAO fullscreen passes draw with (GeoPass binds its own and restores this) */
+export let emptyVAO: WebGLVertexArrayObject;
+/** EXT_float_blend: RGBA32F targets can be blended into */
+export let floatBlend = false;
 
 export function initGL(canvas: HTMLCanvasElement) {
   canvas.width = PW;
@@ -19,8 +23,9 @@ export function initGL(canvas: HTMLCanvasElement) {
   gl = ctx;
   if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('EXT_color_buffer_float unavailable');
   gl.getExtension('OES_texture_float_linear');
-  const vao = gl.createVertexArray();
-  gl.bindVertexArray(vao); // fullscreen triangle comes from gl_VertexID
+  floatBlend = !!gl.getExtension('EXT_float_blend');
+  emptyVAO = gl.createVertexArray()!;
+  gl.bindVertexArray(emptyVAO); // fullscreen triangle comes from gl_VertexID
   return gl;
 }
 
@@ -29,14 +34,22 @@ export function rendererInfo(): string {
   return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
 }
 
+export type RTFormat = 'rgba16f' | 'rgba32f' | 'rgba8';
+const FORMATS: Record<RTFormat, [number, number]> = {
+  rgba16f: [WebGL2RenderingContext.RGBA16F, WebGL2RenderingContext.HALF_FLOAT],
+  rgba32f: [WebGL2RenderingContext.RGBA32F, WebGL2RenderingContext.FLOAT],
+  rgba8: [WebGL2RenderingContext.RGBA8, WebGL2RenderingContext.UNSIGNED_BYTE],
+};
+
 /** HDR (RGBA16F) render target, sized in *physical* pixels */
 export class RT {
   tex: WebGLTexture;
   fbo: WebGLFramebuffer;
-  constructor(public w: number, public h: number, filter: number = WebGL2RenderingContext.LINEAR) {
+  constructor(public w: number, public h: number, filter: number = WebGL2RenderingContext.LINEAR, format: RTFormat = 'rgba16f') {
     this.tex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    const [internal, type] = FORMATS[format];
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, gl.RGBA, type, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -57,7 +70,7 @@ export function clearRT(target: RT | null, c: [number, number, number] = [0, 0, 
   gl.clear(gl.COLOR_BUFFER_BIT);
 }
 
-function bindTarget(target: RT | null) {
+export function bindTarget(target: RT | null) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
   gl.viewport(0, 0, target ? target.w : PW, target ? target.h : PH);
 }
@@ -87,6 +100,9 @@ float pxLine(float d, float w) { float aa = .75 / uScale; return 1. - smoothstep
 float pxFill(float d) { float aa = .75 / uScale; return 1. - smoothstep(-aa, aa, d); }
 `;
 
+/** GLSL_COMMON minus what only exists in fragment shaders (for GeoPass vertex shaders) */
+export const GLSL_VCOMMON = GLSL_COMMON.split('\n').filter((l) => !l.includes('gl_FragCoord')).join('\n');
+
 const VERT = `#version 300 es
 out vec2 vUv;
 void main() {
@@ -95,10 +111,11 @@ void main() {
   gl_Position = vec4(p * 2. - 1., 0., 1.);
 }`;
 
-export type UniformValue = number | number[] | RT | WebGLTexture | { tex: WebGLTexture };
+/** a Float32Array uniform is a matrix (length 9 → mat3, 16 → mat4) */
+export type UniformValue = number | number[] | Float32Array | RT | WebGLTexture | { tex: WebGLTexture };
 export type Blend = 'none' | 'add' | 'over' | 'multiply';
 
-function compile(type: number, src: string) {
+export function compile(type: number, src: string) {
   const s = gl.createShader(type)!;
   gl.shaderSource(s, src);
   gl.compileShader(s);
@@ -109,6 +126,30 @@ function compile(type: number, src: string) {
     throw new Error('shader compile failed: ' + log);
   }
   return s;
+}
+
+/** bind uniforms by name; textures take units 0, 1, … in order */
+export function setUniforms(uniforms: Record<string, UniformValue>, loc: (name: string) => WebGLUniformLocation | null) {
+  let unit = 0;
+  for (const [k, v] of Object.entries(uniforms)) {
+    const l = loc(k);
+    if (l === null) continue;
+    if (typeof v === 'number') gl.uniform1f(l, v);
+    else if (Array.isArray(v)) {
+      if (v.length === 2) gl.uniform2fv(l, v);
+      else if (v.length === 3) gl.uniform3fv(l, v);
+      else if (v.length === 4) gl.uniform4fv(l, v);
+      else gl.uniform1fv(l, v);
+    } else if (v instanceof Float32Array) {
+      if (v.length === 16) gl.uniformMatrix4fv(l, false, v);
+      else gl.uniformMatrix3fv(l, false, v);
+    } else {
+      const tex = v instanceof WebGLTexture ? v : (v as { tex: WebGLTexture }).tex;
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(l, unit++);
+    }
+  }
 }
 
 /**
@@ -136,23 +177,7 @@ export class Pass {
     gl.useProgram(this.prog);
     gl.uniform2f(this.u('uRes'), target ? target.w : PW, target ? target.h : PH);
     gl.uniform1f(this.u('uScale'), SCALE);
-    let unit = 0;
-    for (const [k, v] of Object.entries(uniforms)) {
-      const l = this.u(k);
-      if (l === null) continue;
-      if (typeof v === 'number') gl.uniform1f(l, v);
-      else if (Array.isArray(v)) {
-        if (v.length === 2) gl.uniform2fv(l, v);
-        else if (v.length === 3) gl.uniform3fv(l, v);
-        else if (v.length === 4) gl.uniform4fv(l, v);
-        else gl.uniform1fv(l, v);
-      } else {
-        const tex = v instanceof WebGLTexture ? v : (v as { tex: WebGLTexture }).tex;
-        gl.activeTexture(gl.TEXTURE0 + unit);
-        gl.bindTexture(gl.TEXTURE_2D, tex);
-        gl.uniform1i(l, unit++);
-      }
-    }
+    setUniforms(uniforms, (k) => this.u(k));
     if (blend === 'none') gl.disable(gl.BLEND);
     else {
       gl.enable(gl.BLEND);

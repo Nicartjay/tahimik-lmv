@@ -7,10 +7,16 @@ import { clearRT, gl, makeRT, Pass, type RT } from './gl';
 import { HUD } from './hud';
 import type { Lyrics } from './lyrics';
 import { lerpPost, PostFX, resolvePost, type ResolvedPost } from './post';
+import { Sampler } from './sampler';
 import { SlotPool, type Entry, type Frame, type Scene, type SceneClass } from './scene';
 import { frameIdx, smoothstep } from './util';
 
 export type Registry = Record<string, () => Promise<{ default: SceneClass }>>;
+
+export interface EngineOpts {
+  /** draw the HUD over the frame (default true) */
+  hud?: boolean;
+}
 
 const HUD_OVER = /* glsl */ `
 uniform sampler2D uTex;
@@ -22,10 +28,13 @@ export class Engine {
   fx!: PostFX;
   hud!: HUD;
   errors: string[] = [];
+  /** sub-frames the last render() used */
+  lastSamples = 1;
   private sceneRT!: RT;
   private accum!: RT;
   private slotRT: RT[] = [];
   private hudPass!: Pass;
+  sampler: Sampler | null = null;
   private failed = new Set<string>();
 
   constructor(
@@ -33,6 +42,7 @@ export class Engine {
     public lyrics: Lyrics,
     public audio: AudioData,
     public liwanag: (t: number) => number,
+    public opts: EngineOpts = {},
   ) {}
 
   async init(reg: Registry) {
@@ -136,15 +146,29 @@ export class Engine {
     return lerpPost(pa, pb, tin);
   }
 
+  /** the sample cap for 'auto' at t: the lowest Scene.maxSamples among live entries */
+  sampleCap(t: number): number {
+    const act = this.active(t);
+    return act.length ? Math.min(...act.map((i) => this.scenes[i]!.maxSamples)) : 1;
+  }
+
   /**
    * Final frame to the canvas. samples > 1 accumulates sub-frames over a forward
-   * shutter of `shutter` × frame duration (sample 0 is exactly t).
+   * shutter of `shutter` × frame duration (sample 0 is exactly t); 'auto' refines
+   * adaptively (sampler.ts) up to the live scenes' cap.
    */
-  render(t: number, samples = 1, shutter = 0.5): ResolvedPost {
+  render(t: number, samples: number | 'auto' = 1, shutter = 0.5): ResolvedPost {
     const frame = frameIdx(t);
     let post: ResolvedPost;
     let src: RT;
-    if (samples <= 1) {
+    if (samples === 'auto') {
+      this.sampler ??= new Sampler();
+      const r = this.sampler.run((ts) => this.composite(ts, this.sceneRT, frame), this.sceneRT, t, shutter, this.sampleCap(t));
+      post = r.post;
+      src = r.src;
+      this.lastSamples = r.samples;
+    } else if (samples <= 1) {
+      this.lastSamples = 1;
       post = this.composite(t, this.sceneRT, frame);
       src = this.sceneRT;
     } else {
@@ -156,10 +180,13 @@ export class Engine {
         this.fx.accumPass.draw(this.accum, { uSrc: this.sceneRT, uW: 1 / samples }, 'add');
       }
       src = this.accum;
+      this.lastSamples = samples;
     }
     this.fx.run(src, post, frame);
-    const hl = this.hud.draw(t, post, this.current(t));
-    if (hl) this.hudPass.draw(null, { uTex: hl.upload() }, 'over');
+    if (this.opts.hud !== false) {
+      const hl = this.hud.draw(t, post, this.current(t));
+      if (hl) this.hudPass.draw(null, { uTex: hl.upload() }, 'over');
+    }
     return post;
   }
 

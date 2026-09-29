@@ -6,6 +6,10 @@
 //   node scripts/render.ts sheet --n 24 [--from --to | --t a,b,c]  contact sheet → out/sheet.png
 //   node scripts/render.ts bench [--samples 4] [--t a,b,c]   ms/frame per plate and per crossfade
 //
+//   --film mv       the music video instead of the lyric video (outputs tahimik_mv*.mp4,
+//                   out/mv/stills, out/mv/sheet.png)
+//   --samples N     fixed sub-frames per frame; 'auto' = adaptive (default for mv video)
+//
 // Frames leave the page as raw RGBA (bottom-up) via POST /__frame, are re-ordered here
 // and piped to ffmpeg's stdin; the song is muxed from ../audio.
 
@@ -35,6 +39,7 @@ const { positionals, values: V } = parseArgs({
     preset: { type: 'string', default: 'slow' },
     only: { type: 'string' },
     t: { type: 'string' },
+    film: { type: 'string', default: 'lmv' },
     n: { type: 'string', default: '24' },
     cols: { type: 'string', default: '4' },
     tile: { type: 'string', default: '480' },
@@ -50,7 +55,11 @@ if (!['video', 'stills', 'sheet', 'bench'].includes(mode)) {
 }
 const num = (s: string | undefined, d: number) => (s === undefined ? d : Number(s));
 const fps = num(V.fps, 60), scale = num(V.scale, 1);
-const samples = num(V.samples, mode === 'video' ? 4 : 1), shutter = num(V.shutter, 0.5);
+const film = V.film!;
+const mv = film !== 'lmv';
+const samples: number | 'auto' =
+  V.samples === 'auto' ? 'auto' : V.samples !== undefined ? Number(V.samples) : mode !== 'video' ? 1 : mv ? 'auto' : 4;
+const shutter = num(V.shutter, 0.5);
 
 // ---- frame sink -------------------------------------------------------------
 
@@ -124,6 +133,7 @@ let code = 0;
 try {
   const qs = new URLSearchParams({ export: '1', fps: String(fps), scale: String(scale) });
   if (V.only) qs.set('only', V.only);
+  if (mv) qs.set('film', film);
   await page.goto(`http://localhost:${port}/?${qs}`);
   await page.waitForFunction(() => (window as any).__tahimikReady || (window as any).__tahimikError, null, { timeout: 180_000 });
   const err = await page.evaluate(() => (window as any).__tahimikError);
@@ -140,12 +150,14 @@ try {
   const from = num(V.from, 0);
   const to = Math.min(num(V.to, info.duration), info.duration);
   const outDir = join(root, 'out');
+  const filmDir = mv ? join(outDir, film) : outDir;
+  const base = mv ? `tahimik_${film}` : 'tahimik';
   mkdirSync(outDir, { recursive: true });
 
   if (mode === 'stills') {
     const ts = (V.t ?? '').split(',').filter(Boolean).map(Number);
     if (!ts.length) throw new Error('stills: pass --t 12,34.5,…');
-    const dir = V.out ?? join(outDir, 'stills');
+    const dir = V.out ?? join(filmDir, 'stills');
     mkdirSync(dir, { recursive: true });
     for (const t of ts) {
       const url: string = await page.evaluate(([t, s, sh]) => (window as any).__tahimik.still(t, s, sh), [t, samples, shutter]);
@@ -160,7 +172,7 @@ try {
       ([ts, cols, tile, s]) => (window as any).__tahimik.sheet(ts, cols, tile, s),
       [ts, num(V.cols, 4), num(V.tile, 480), samples] as const,
     );
-    const file = V.out ?? join(outDir, 'sheet.png');
+    const file = V.out ?? join(filmDir, 'sheet.png');
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, Buffer.from(url.split(',')[1], 'base64'));
     console.log(file);
@@ -170,20 +182,23 @@ try {
     const ts = V.t
       ? V.t.split(',').map(Number)
       : entries.flatMap((e, i) => [(e.start + e.end) / 2, ...(i ? [e.start + (entries[i - 1].end - e.start) / 2] : [])]).sort((a, b) => a - b);
-    const rows: { t: number; label: string; live: number; render: number; read: number }[] = await page.evaluate(
+    const rows: { t: number; label: string; live: number; render: number; read: number; samples: number; trace: number[] }[] = await page.evaluate(
       ([ts, s]) => (window as any).__tahimik.bench(ts, s),
       [ts, samples] as const,
     );
-    let sum = 0;
+    let sum = 0, ns = 0;
     for (const r of rows) {
       sum += r.render + r.read;
-      console.log(`${r.t.toFixed(2).padStart(7)}  ${r.live === 2 ? '×' : ' '} ${r.label.padEnd(26)} ${r.render.toFixed(1).padStart(7)} ms  read ${r.read.toFixed(1)} ms`);
+      ns += r.samples;
+      const ss = samples === 'auto' ? `  ${r.samples.toFixed(0).padStart(3)} samples  Δ ${r.trace.join(' ')}` : '';
+      console.log(`${r.t.toFixed(2).padStart(7)}  ${r.live === 2 ? '×' : ' '} ${r.label.padEnd(26)} ${r.render.toFixed(1).padStart(7)} ms  read ${r.read.toFixed(1)} ms${ss}`);
     }
     const avg = sum / rows.length;
-    console.log(`mean ${avg.toFixed(1)} ms/frame @ ${samples} samples → ~${((avg * info.duration * fps) / 60000).toFixed(0)} min for the song at ${fps} fps (before encode)`);
+    const at = samples === 'auto' ? `auto (mean ${(ns / rows.length).toFixed(1)})` : samples;
+    console.log(`mean ${avg.toFixed(1)} ms/frame @ ${at} samples → ~${((avg * info.duration * fps) / 60000).toFixed(0)} min for the song at ${fps} fps (before encode)`);
   } else {
     const [w, h] = info.size;
-    const file = V.out ?? join(outDir, from === 0 && to === info.duration ? 'tahimik.mp4' : `tahimik_${from}-${to}.mp4`);
+    const file = V.out ?? join(outDir, from === 0 && to === info.duration ? `${base}.mp4` : `${base}_${from}-${to}.mp4`);
     const dur = to - from;
     const audioIn = existsSync(SONG) ? ['-ss', String(from), '-t', String(dur), '-i', SONG] : [];
     if (!audioIn.length) console.warn('audio/Tahimik.mp3 not found: rendering silent video');

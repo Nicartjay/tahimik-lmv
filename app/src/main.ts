@@ -1,15 +1,17 @@
 import audioUrl from '../../data/audio.json?url';
 import lyricsUrl from '../../data/lyrics.json?url';
 import { AudioData, type AudioJSON } from './engine/audio';
-import { EXPORT, FPS, H, PH, PW, W } from './engine/config';
+import { EXPORT, FILM, FPS, H, PH, PW, W } from './engine/config';
 import { Engine } from './engine/engine';
 import { loadFonts } from './engine/fonts';
 import { gl, initGL, rendererInfo } from './engine/gl';
 import { Lyrics } from './engine/lyrics';
-import { registry } from './scenes/index';
-import { buildTimeline } from './timeline';
+import { films } from './films';
 
 const q = new URLSearchParams(location.search);
+
+/** sub-frames per frame: a fixed count, or 'auto' (adaptive, see engine/sampler.ts) */
+type Samples = number | 'auto';
 const canvas = document.getElementById('out') as HTMLCanvasElement;
 
 async function boot() {
@@ -21,9 +23,12 @@ async function boot() {
   ]);
   const audio = new AudioData(aj);
   const lyrics = new Lyrics(lj);
-  const tl = buildTimeline(lyrics, audio);
-  const engine = new Engine(tl.entries, lyrics, audio, tl.liwanag);
-  await engine.init(registry);
+  const load = films[FILM];
+  if (!load) throw new Error(`unknown film "${FILM}" (${Object.keys(films).join(' | ')})`);
+  const film = await load();
+  const tl = film.buildTimeline(lyrics, audio);
+  const engine = new Engine(tl.entries, lyrics, audio, tl.liwanag, { hud: film.hud });
+  await engine.init(film.registry);
   exposeApi(engine);
   if (!EXPORT) preview(engine);
 }
@@ -34,17 +39,18 @@ async function boot() {
 function exposeApi(engine: Engine) {
   const api = {
     renderer: rendererInfo(),
+    film: FILM,
     duration: engine.audio.duration,
     entries: engine.entries.map((e) => ({ scene: e.scene, label: e.label, start: e.start, end: e.end })),
     errors: engine.errors,
     size: [PW, PH],
 
-    still(t: number, samples = 1, shutter = 0.5): string {
+    still(t: number, samples: Samples = 1, shutter = 0.5): string {
       engine.render(t, samples, shutter);
       return canvas.toDataURL('image/png');
     },
 
-    sheet(times: number[], cols = 4, tileW = 480, samples = 1): string {
+    sheet(times: number[], cols = 4, tileW = 480, samples: Samples = 1): string {
       const tileH = Math.round((tileW * H) / W);
       const cap = 26;
       const rows = Math.ceil(times.length / cols);
@@ -67,13 +73,13 @@ function exposeApi(engine: Engine) {
     },
 
     /** ms per frame at each t, GPU-synced: render (scenes + post + HUD) and readPixels */
-    bench(times: number[], samples = 1, reps = 4) {
+    bench(times: number[], samples: Samples = 1, reps = 4) {
       const buf = new Uint8Array(PW * PH * 4), px = new Uint8Array(4);
       const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
       return times.map((t) => {
         engine.render(t, samples);
         sync();
-        let render = 0, read = 0;
+        let render = 0, read = 0, n = 0;
         for (let k = 1; k <= reps; k++) {
           const a = performance.now();
           engine.render(t + k / FPS, samples);
@@ -82,23 +88,29 @@ function exposeApi(engine: Engine) {
           engine.read(buf);
           render += b - a;
           read += performance.now() - b;
+          n += engine.lastSamples;
         }
-        return { t, label: engine.current(t)?.label ?? '', live: engine.active(t).length, render: render / reps, read: read / reps };
+        return {
+          t, label: engine.current(t)?.label ?? '', live: engine.active(t).length,
+          render: render / reps, read: read / reps, samples: n / reps, trace: engine.sampler?.trace ?? [],
+        };
       });
     },
 
     /** render frames [from, to) and POST them in order to /__frame; returns frame count */
-    async exportRange(from: number, to: number, samples = 1, shutter = 0.5): Promise<number> {
+    async exportRange(from: number, to: number, samples: Samples = 1, shutter = 0.5): Promise<number> {
       const f0 = Math.round(from * FPS), f1 = Math.round(to * FPS);
       const n = f1 - f0;
       const RING = 4;
       const bufs = Array.from({ length: RING }, () => new Uint8Array(PW * PH * 4));
       const inflight: Promise<unknown>[] = Array(RING).fill(Promise.resolve());
       const t0 = performance.now();
+      let used = 0;
       for (let i = 0; i < n; i++) {
         const k = i % RING;
         await inflight[k];
         engine.render((f0 + i) / FPS, samples, shutter);
+        used += engine.lastSamples;
         engine.read(bufs[k]);
         // a Blob body, not the typed array: Chrome streams an ArrayBufferView upload at ~30 MB/s,
         // a Blob at >1 GB/s (and the Blob's copy frees bufs[k] for reuse straight away)
@@ -111,7 +123,8 @@ function exposeApi(engine: Engine) {
         });
         if (i % 120 === 0 || i === n - 1) {
           const el = (performance.now() - t0) / 1000;
-          console.log(`[export] ${i + 1}/${n}  ${((i + 1) / el).toFixed(1)} fps  eta ${(((n - i - 1) * el) / (i + 1)).toFixed(0)}s`);
+          const ss = samples === 'auto' ? `  ${(used / (i + 1)).toFixed(1)} samples/frame` : '';
+          console.log(`[export] ${i + 1}/${n}  ${((i + 1) / el).toFixed(1)} fps  eta ${(((n - i - 1) * el) / (i + 1)).toFixed(0)}s${ss}`);
         }
         if (engine.errors.length) throw new Error(engine.errors.join('\n'));
       }
@@ -135,7 +148,7 @@ function preview(engine: Engine) {
 
   let t = Number(q.get('t') ?? load('t') ?? 0);
   let playing = false;
-  let samples = 1;
+  let samples: Samples = 1;
   let dragging = false;
 
   // scrub-bar segments at the cut points
@@ -184,6 +197,7 @@ function preview(engine: Engine) {
     else if (ev.key === '[') seek([...cuts].reverse().find((c) => c < t - 0.25) ?? 0);
     else if (ev.key === ']') seek(cuts.find((c) => c > t + 0.01) ?? t);
     else if (/^[1-9]$/.test(ev.key)) samples = Number(ev.key);
+    else if (ev.key === '0') samples = 'auto';
     else if (ev.key === 'g') engine.hud.guides = !engine.hud.guides;
     else return;
     ev.preventDefault();
@@ -202,7 +216,7 @@ function preview(engine: Engine) {
     playBtn.textContent = playing ? '❚❚' : '▶';
     const e = engine.current(t);
     const bar = engine.audio.barAt(t);
-    info.textContent = `${t.toFixed(2)}s  f${Math.floor(t * FPS)}  bar ${bar.toFixed(2)}  ${e?.label ?? ''}  ${ms.toFixed(1)}ms  ${samples}×`;
+    info.textContent = `${t.toFixed(2)}s  f${Math.floor(t * FPS)}  bar ${bar.toFixed(2)}  ${e?.label ?? ''}  ${ms.toFixed(1)}ms  ${samples === 'auto' ? `auto(${engine.lastSamples})` : `${samples}×`}`;
     if (engine.errors.length) info.textContent += '  ⚠ ' + engine.errors.length + ' error(s) — see console';
     if (performance.now() - last > 500) {
       save('t', t);
@@ -213,16 +227,18 @@ function preview(engine: Engine) {
   requestAnimationFrame(tick);
 }
 
+// the lyric video keeps its original keys
+const storeKey = (k: string) => (FILM === 'lmv' ? 'tahimik.' : `tahimik.${FILM}.`) + k;
 function load(k: string): string | null {
   try {
-    return localStorage.getItem('tahimik.' + k);
+    return localStorage.getItem(storeKey(k));
   } catch {
     return null;
   }
 }
 function save(k: string, v: unknown) {
   try {
-    localStorage.setItem('tahimik.' + k, String(v));
+    localStorage.setItem(storeKey(k), String(v));
   } catch {}
 }
 

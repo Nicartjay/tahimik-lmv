@@ -124,6 +124,8 @@ void main() {
 export abstract class Scene {
   /** set when the scene composites f.under itself during its fade-in */
   handlesTransition = false;
+  /** most sub-frames the adaptive sampler may spend on a frame of this scene (samples 'auto') */
+  maxSamples = 108;
   constructor(public ctx: SceneCtx) {}
 
   async init(): Promise<void> {}
