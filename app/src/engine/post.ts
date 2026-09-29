@@ -64,7 +64,7 @@ export const GLSL_SHOULDER = /* glsl */ `vec3 shoulder(vec3 x) {
 
 const FINAL = /* glsl */ `
 uniform sampler2D uScene, uBloom;
-uniform float uExposure, uBloomStr, uGrain, uVignette, uCA, uFade, uFlash, uZoom, uFrame;
+uniform float uExposure, uBloomStr, uGrain, uVignette, uCA, uFade, uFlash, uFlashD, uZoom, uFrame;
 uniform vec2 uShake;
 ${GLSL_SHOULDER}
 void main() {
@@ -82,7 +82,7 @@ void main() {
   c *= mix(1., smoothstep(1.05, .2, r), uVignette);
   c = mix(c, C_PAPER, uFlash);
   c *= 1. - uFade;
-  vec3 s = lin2srgb(shoulder(c));
+  vec3 s = mix(lin2srgb(shoulder(c)), lin2srgb(shoulder(C_PAPER)), uFlashD);
   // film grain: triangular noise on a logical-px grid, strongest in the mids
   vec2 px = floor(fragPx());
   float g = hash13(vec3(px, uFrame)) + hash13(vec3(px + 19.7, uFrame * 1.37 + 5.)) - 1.;
@@ -144,6 +144,7 @@ export class PostFX {
       uCA: p.ca,
       uFade: p.fade,
       uFlash: p.flash,
+      uFlashD: p.flashD,
       uZoom: p.zoom,
       uFrame: frame % 4096,
       uShake: p.shake,

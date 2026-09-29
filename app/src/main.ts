@@ -121,6 +121,10 @@ function exposeApi(engine: Engine) {
         }).then((r) => {
           if (!r.ok) throw new Error(`frame ${i}: HTTP ${r.status}`);
         });
+        // a sent frame's Blob is only released when its (tiny) JS wrapper is collected, and a
+        // render loop makes too little JS garbage for V8 to bother: in a headless browser, which
+        // can't page blobs to disk, they pile up to ERR_BLOB_OUT_OF_MEMORY within a few seconds
+        if (i % 30 === 29) (globalThis as { gc?: () => void }).gc?.();
         if (i % 120 === 0 || i === n - 1) {
           const el = (performance.now() - t0) / 1000;
           const ss = samples === 'auto' ? `  ${(used / (i + 1)).toFixed(1)} samples/frame` : '';

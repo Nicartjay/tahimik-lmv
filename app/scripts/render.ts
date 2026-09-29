@@ -120,7 +120,8 @@ const port = typeof addr === 'object' && addr ? addr.port : 5173;
 const browser = await chromium.launch({
   channel: 'chrome',
   headless: !V.headed,
-  args: ['--ignore-gpu-blocklist', '--use-angle=metal', '--enable-gpu-rasterization', '--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
+  // --expose-gc: exportRange collects every few frames (see main.ts)
+  args: ['--ignore-gpu-blocklist', '--use-angle=metal', '--enable-gpu-rasterization', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--js-flags=--expose-gc'],
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 page.on('console', (m) => {

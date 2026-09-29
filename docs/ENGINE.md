@@ -68,3 +68,61 @@ The POST body must be a `Blob`: Chrome uploads a typed-array body at ~30 MB/s (3
 on an M4 (12 895 frames in 23 min), with ffmpeg's x264 `slow` encode of the grain using
 ~9 cores; `node scripts/render.ts bench` prints the per-plate render cost if a scene gets
 heavy.
+
+## The music video (`?film=mv`)
+
+`films.ts` picks the film. `lmv`, the lyric video above, is the default. `mv` loads
+`src/mv/`, which has its own registry, its own timeline and no HUD. Both films share the
+engine, the analysis and the export. Running `node scripts/render.ts … --film mv` writes
+`out/tahimik_mv*.mp4`, `out/mv/stills/` and `out/mv/sheet.png`.
+
+### 3D layer — `engine/3d/`
+
+- **`camera.ts`** turns an authored `Cam` (eye, target, roll, fov) into a `Basis`
+  (eye, R/U/F, focal length in logical px). The same basis drives every shader, so rays,
+  lines, points and words register exactly. It also has helpers:
+  - `orbit`, `lerpCam` (zoom in log space) and `handheld`, which is `noise1` keyed to
+    `frameIdx`
+  - a shot list with snaps, whips and dutch kicks
+- **`geo.ts`** (`GeoPass`) draws one instanced quad per instance from an interleaved
+  attribute buffer. It keeps its own VAO and restores the empty one that fullscreen
+  passes rely on.
+- **`lines.ts`** (`LineBatch`) draws segments as screen-space capsules, sized in logical
+  px (> 0) or world units (< 0). Hairlines under 0.7 px keep their light instead of
+  shimmering. Two GLSL hooks animate a static batch on the GPU:
+  `warp(p, data, end)` and `tint(col, p, data)`. Each segment has a free `vec4` of data.
+  Blending is `add`, `max` or premultiplied `over`, with depth fog.
+- **`points.ts`** (`GlowPoints`) draws Gaussian sprites for fireflies and dust, with the
+  same hooks as `LineBatch`, plus near-fade and occlusion.
+- **`words.ts`** (`Words`) draws kinetic hero words. Glyphs are rasterised once into a
+  mip-mapped atlas and drawn as one 3D quad per glyph, kerned by `fonts.ts`, so a word
+  can fly past, orbit or break apart.
+- **`sdf.glsl.ts`** has the raymarching chunks: the camera ray, 3D noise, SDFs, a sphere
+  tracer, normals, AO, soft shadows and analytic glow.
+
+A raymarched pass writes view depth into `.a` of its RT, with 1e4 for background. Lines,
+points and words take that RT as `depth` and are occluded by it.
+
+### Adaptive motion blur — `engine/sampler.ts`
+
+When `samples` is `auto` (the default for an mv video), each frame averages its forward
+shutter over nested sample sets: 4 → 12 → 36 → 108. Each level keeps the previous one's
+samples and reuses its sum. After each level, a display-space change test runs per 2×2
+block, and the loop stops once no block anywhere moves by 5 levels of 255.
+
+A locked-off frame stops at 12 samples and a whip runs to its scene's `maxSamples`
+(default 108). Post settings come from the first sample, so a frame never depends on
+where the loop stopped. Cuts sit exactly on frame boundaries, so a shutter never
+straddles one. NaN and Inf sub-frames are dropped.
+
+Only the scene is blurred. Post shake and zoom are not, so every fast move in the music
+video is a camera move inside the scene.
+
+### MV kits — `src/mv/scenes/_*.ts`
+
+| kit | what it holds |
+|---|---|
+| `_labas` | The outer world in cool line art: sky, ground grid, posable line figures (`figure`, `POSE`, `walk`), crowds that bob on the beat (`Crowd`, `scatter`), and props (building, stage, boxes). |
+| `_loob` | The inner world: one raymarcher with a swelling sea (heightfield secant trace), floating islands, a night-to-dawn sky, haze and the firefly light (`Loob`). Also `Flies`, a closed-form field of thousands of fireflies. |
+| `_self` | The protagonist: a line figure with the firefly in the chest. `chest()` is the point every dive passes through, and `lightOf(LIWANAG)` sets its brightness. |
+| `_fx` | Hit pulses (`impact`: flash, CA, shake keyed to the frame), `mergePost`, beat and bar lists, `Fill`, the dive curves with `DIVE_COL`/`towardDive` for match cuts, and a shockwave warp chunk. |

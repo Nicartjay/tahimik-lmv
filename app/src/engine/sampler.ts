@@ -35,13 +35,13 @@ void main() {
 
 // per 2×2 block: mean over its pixels of the largest channel change, ×2 into a byte
 const ERR = /* glsl */ `
-uniform sampler2D uA, uB; uniform float uExposure, uFlash, uFade;
+uniform sampler2D uA, uB; uniform float uExposure, uFlash, uFlashD, uFade;
 ${GLSL_SHOULDER}
 vec3 disp(vec3 c) {
   c *= uExposure;
   c = mix(c, C_PAPER, uFlash);
   c *= 1. - uFade;
-  return lin2srgb(shoulder(c));
+  return mix(lin2srgb(shoulder(c)), lin2srgb(shoulder(C_PAPER)), uFlashD);
 }
 void main() {
   ivec2 o = ivec2(gl_FragCoord.xy) * 2, mx = textureSize(uA, 0) - 1;
@@ -139,7 +139,7 @@ export class Sampler {
 
   /** largest display-space change between two estimates, as a byte (levels × 2) */
   private change(a: RT, b: RT, p: ResolvedPost): number {
-    this.errPass.draw(this.err, { uA: a, uB: b, uExposure: p.exposure, uFlash: p.flash, uFade: p.fade });
+    this.errPass.draw(this.err, { uA: a, uB: b, uExposure: p.exposure, uFlash: p.flash, uFlashD: p.flashD, uFade: p.fade });
     this.reduce.draw(this.red, { uSrc: this.err });
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.red.fbo);
     gl.readPixels(0, 0, this.red.w, this.red.h, gl.RGBA, gl.UNSIGNED_BYTE, this.buf);

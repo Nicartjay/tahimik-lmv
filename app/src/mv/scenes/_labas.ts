@@ -16,8 +16,10 @@ import { hash, lerp, smoothstep, TAU } from '../../engine/util';
 export const INK = {
   /** figures and near props */
   line: lin('ash'),
-  /** a touch brighter, for the self and anything the eye should find */
-  bright: mul(lin('pencil'), 1.25),
+  /** brighter, for the self and anything the eye should find */
+  bright: mul(lin('paper'), 0.62),
+  /** pencil: the self as a dark shape against LOOB's glow */
+  shade: mul(lin('pencil'), 1.25),
   /** grid, far structure */
   dim: lin('graphite'),
   faint: lin('slate'),
@@ -246,10 +248,10 @@ export const toWorld = (m: Place, p: V3): V3 => add(m.pos, rotY(mul(p, m.scale ?
  * Add a posed figure to a batch built with FIGURE_GLSL. `id` seeds its idle motion; the
  * head is a ring the shader billboards to face the camera.
  */
-export function addFigure(L: LineBatch, fig: Figure, m: Place, id: number, w: number, col: RGB, alpha = 1) {
+export function addFigure(L: LineBatch, fig: Figure, m: Place, id: number, w: number, col: RGB, alpha = 1, headN = HEAD_N) {
   for (const [a, b] of fig.segs) L.seg(toWorld(m, a), toWorld(m, b), w, col, alpha, [id, 0, 0, 0]);
   const c = toWorld(m, fig.head), r = HEAD_R * (m.scale ?? 1);
-  for (let k = 0; k < HEAD_N; k++) L.seg(c, c, w, col, alpha, [id, r, (k / HEAD_N) * TAU, ((k + 1) / HEAD_N) * TAU]);
+  for (let k = 0; k < headN; k++) L.seg(c, c, w, col, alpha, [id, r, (k / headN) * TAU, ((k + 1) / headN) * TAU]);
 }
 
 /**
@@ -291,7 +293,7 @@ export interface CrowdDraw extends DrawOpts {
 export class Crowd {
   lines: LineBatch;
   constructor(public members: Member[], o: { w?: number; col?: RGB; alpha?: number; seed?: number } = {}) {
-    this.lines = new LineBatch(members.length * (13 + HEAD_N), FIGURE_GLSL);
+    this.lines = new LineBatch(members.length * (15 + HEAD_N), FIGURE_GLSL);
     const figs = new Map<Pose, Figure>();
     members.forEach((m, i) => {
       const p = m.pose ?? POSE.stand;

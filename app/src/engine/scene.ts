@@ -35,8 +35,10 @@ export interface Post {
   ca?: number;
   /** 0..1 fade to black */
   fade?: number;
-  /** 0..1 flash to paper */
+  /** 0..1 flash to paper, mixed in linear light (a small value already greys a dark frame) */
   flash?: number;
+  /** 0..1 flash to paper, mixed after the tone curve: it looks as strong as it is, so its tail is short */
+  flashD?: number;
   /** camera shake in logical px */
   shake?: [number, number];
   zoom?: number;
@@ -58,6 +60,7 @@ export const POST_DEFAULTS: Required<Omit<Post, 'liwanag'>> & { liwanag: number 
   ca: 0,
   fade: 0,
   flash: 0,
+  flashD: 0,
   shake: [0, 0],
   zoom: 1,
   hud: 1,

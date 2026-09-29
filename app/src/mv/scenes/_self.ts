@@ -47,7 +47,8 @@ export class Self {
     const fig = figure(o.pose ?? POSE.shy);
     if (!o.noBody) {
       this.body.clear();
-      addFigure(this.body, fig, o, 0, o.w ?? 1.15, o.col ?? INK.bright, o.alpha ?? 1);
+      // a rounder head than the crowd's: the camera comes close to this one
+      addFigure(this.body, fig, o, 0, o.w ?? 1.15, o.col ?? INK.bright, o.alpha ?? 1, 40);
       this.body.draw(out, b, { ...d, uniforms: { uBeat: 0, uSway: 0, uBob: 0, uGroundY: o.pos[1], ...(d.uniforms ?? {}) } });
     }
     const I = (o.light ?? 1) * (1 + 0.07 * noise1(t * 7.3, 11) + 0.04 * noise1(t * 19.1, 12));

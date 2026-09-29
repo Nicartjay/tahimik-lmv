@@ -17,7 +17,7 @@ export function decay(t: number, times: number[], tau = 0.25): number {
 }
 
 export interface ImpactOpts {
-  /** peak flash to paper (0..1) */
+  /** peak flash to paper (0..1), as bright on black as `Post.flash` of the same value */
   flash?: number;
   /** peak chromatic aberration */
   ca?: number;
@@ -27,26 +27,38 @@ export interface ImpactOpts {
   seed?: number;
 }
 
-/** post for impacts at `times`: flash (decays twice as fast), CA kick, shake new every frame */
+// a linear-light flash → the display-space flash that peaks as bright on black (paper's green
+// channel through the tone curve and sRGB, as post.ts does it)
+const srgb = (x: number) => (x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0.055);
+const shoulder = (x: number) => (x < 0.78 ? x : 0.78 + 0.22 * (1 - Math.exp(-(x - 0.78) / 0.22)));
+const PAPER_G = lin('paper')[1];
+const toDisplay = (f: number) => Math.min(1, srgb(shoulder(f * PAPER_G)) / srgb(shoulder(PAPER_G)));
+
+/**
+ * post for impacts at `times`: flash (decays twice as fast), CA kick, shake new every frame.
+ * The flash is mixed in display space (`flashD`): mixed in linear light, its tail left a dark
+ * frame grey for a third of a second.
+ */
 export function impact(t: number, times: number[], o: ImpactOpts = {}): Post {
   const k = decay(t, times, o.tau ?? 0.22);
   if (k <= 0) return {};
   const f = frameIdx(t), s = (o.shake ?? 10) * k, sd = o.seed ?? 0;
   return {
-    flash: (o.flash ?? 0) * k * k,
+    flashD: toDisplay(o.flash ?? 0) * k * k,
     ca: (o.ca ?? 0.8) * k,
     shake: [(hash(f, sd, 1) * 2 - 1) * s, (hash(f, sd, 2) * 2 - 1) * s],
   };
 }
 
-/** combine post parts: flash, ca and shake add; everything else, the last one wins */
+/** combine post parts: flashes, ca and shake add; everything else, the last one wins */
 export function mergePost(...ps: (Post | void)[]): Post {
   const out: Post = {};
   for (const p of ps) {
     if (!p) continue;
-    const { flash, ca, shake, ...rest } = p;
+    const { flash, flashD, ca, shake, ...rest } = p;
     Object.assign(out, rest);
     if (flash) out.flash = (out.flash ?? 0) + flash;
+    if (flashD) out.flashD = Math.min(1, (out.flashD ?? 0) + flashD);
     if (ca) out.ca = (out.ca ?? 0) + ca;
     if (shake) out.shake = [(out.shake?.[0] ?? 0) + shake[0], (out.shake?.[1] ?? 0) + shake[1]];
   }

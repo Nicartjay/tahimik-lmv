@@ -26,6 +26,12 @@ const vec3 DEEP = vec3(.0015, .004, .008);
 // ---- islands
 const float CELL = 36.;
 float sdIsle(vec3 p, float r, float seed) {
+  // far off, the distance to a sphere round the island is a safe step and skips the noise
+  // (rim, noise and blend all stay within 1.52 r of (0, -.8 r, 0)). The shell is wide: a far
+  // island is a few pixels, its edge a matter of where the steps land, and a closer switch
+  // moves them enough to erode it
+  float bs = length(p + vec3(0., r * .8, 0.)) - r * 1.6;
+  if (bs > r * 2.) return bs;
   float top = sdEllipsoid(p, vec3(r, r * .34, r));
   float root = sdRoundCone(p, vec3(0., -r * .05, 0.), vec3(0., -r * 1.8, 0.), r * .8, r * .05);
   float d = smin(top, root, r * .3);
@@ -141,7 +147,8 @@ vec3 shadeSea(vec3 p, vec3 n, vec3 rd, float t) {
   col += C_GLOW * pointGlow(p, r, 400., uGlow, uGlowR) * uGlowI * .02 * fr;
   vec3 L = uGlow - p;
   float dl = length(L);
-  col += C_GLOW * pow(max(dot(r, L / dl), 0.), 60.) * uGlowI * 4. / (1. + dl * dl * .05);
+  // (a tight lobe, so a light near the water breaks up into glitter on the swell, not a ball)
+  col += C_GLOW * pow(max(dot(r, L / dl), 0.), 280.) * uGlowI * 12. / (1. + dl * dl * .05);
   // bioluminescence: warm specks riding the swell
   // (two layers turned against each other, so the value-noise grid never shows)
   vec2 q = p.xz * mat2(.8, -.6, .6, .8), q2 = q * mat2(.28, -.96, .96, .28);
