@@ -63,12 +63,16 @@ node scripts/mv-cues.mjs --only alon                # cut windows + sung words/b
 ```
 
 A full 4-sample render takes about 23 minutes on an M4 and writes a ~2.7 GB master
-(the film grain keeps crf 16 near 100 Mbit/s). For uploading, re-encode a delivery copy:
+(the film grain keeps crf 16 near 100 Mbit/s). The music video, with adaptive motion blur
+averaging ~40 samples a frame, takes about 55 minutes (~3.9 fps) and writes a ~2.2 GB
+master. For uploading, re-encode a delivery copy:
 
 ```sh
 ffmpeg -i out/tahimik.mp4 -c:v libx264 -preset slow -tune grain -crf 18 -maxrate 16M -bufsize 32M \
   -c:a copy -movflags +faststart out/tahimik_share.mp4
 ```
+
+(the same with `tahimik_mv.mp4` → `tahimik_mv_share.mp4` for the music video)
 
 Options:
 
