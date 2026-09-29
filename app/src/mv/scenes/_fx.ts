@@ -4,9 +4,10 @@
 
 import type { AudioData } from '../../engine/audio';
 import { Pass, type RT } from '../../engine/gl';
-import type { RGB } from '../../engine/palette';
-import type { Post } from '../../engine/scene';
-import { ease, frameIdx, hash, prog, type Ease } from '../../engine/util';
+import { lin, type RGB } from '../../engine/palette';
+import { POST_DEFAULTS, type Post } from '../../engine/scene';
+import { ease, frameIdx, hash, lerp, prog, smoothstep, type Ease } from '../../engine/util';
+import { mul } from '../../engine/3d/math';
 
 /** the strongest exp(−Δt/τ) of the hits at or before t (0 when none is recent) */
 export function decay(t: number, times: number[], tau = 0.25): number {
@@ -56,6 +57,23 @@ export function mergePost(...ps: (Post | void)[]): Post {
 export const diveOut = (t: number, cut: number, dur = 0.5, e: Ease = ease.inCubic) => prog(t, cut - dur, cut, e);
 /** 1 → 0 over the first `dur` s after `start`: the next shot opening out of the light */
 export const diveIn = (t: number, start: number, dur = 0.6, e: Ease = ease.outCubic) => 1 - prog(t, start, start + dur, e);
+
+/**
+ * The light every dive and flare passes through: firefly gold, hot enough to bloom to
+ * near white. At a match cut both shots are covered by `Fill.draw(out, DIVE_COL, 1,
+ * 'over')` and carry DIVE_POST, so the frames either side of the cut are the same.
+ */
+export const DIVE_COL: RGB = mul(lin('glow'), 2.2);
+export const DIVE_POST = { exposure: 1, bloom: 0.9, vignette: 0.3, grain: 0.035 } as const;
+
+/** a scene's post eased towards DIVE_POST as its dive fill `k` (0..1) nears 1 */
+export function towardDive(p: Post, k: number): Post {
+  const w = smoothstep(0.5, 1, k);
+  if (w <= 0) return p;
+  const out: Post = { ...p };
+  for (const key of ['exposure', 'bloom', 'vignette', 'grain'] as const) out[key] = lerp(p[key] ?? POST_DEFAULTS[key], DIVE_POST[key], w);
+  return out;
+}
 
 /** beat times in [t0, t1), every `every` beats (from beat index `phase`) */
 export function beats(A: AudioData, t0: number, t1: number, every = 1, phase = 0): number[] {
