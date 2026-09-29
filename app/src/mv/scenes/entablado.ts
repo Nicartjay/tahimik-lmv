@@ -9,7 +9,7 @@
 
 import { sans, serif } from '../../engine/fonts';
 import type { RT } from '../../engine/gl';
-import { Lyrics, type Word } from '../../engine/lyrics';
+import { Lyrics, type Line, type Word } from '../../engine/lyrics';
 import { lin, type RGB } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { clamp, ease, frameIdx, hash, keys, lerp, noise1, prog, smoothstep, TAU } from '../../engine/util';
@@ -24,6 +24,7 @@ import {
 } from './_labas';
 import { lightOf, Self } from './_self';
 import { Beams, type Beam } from './_entablado_beams';
+import { facing, LyricTrack, TONE, VOICE, type Place } from './_lyric';
 
 let sky: Sky | null = null, self: Self | null = null, fill: Fill | null = null, beams: Beams | null = null;
 
@@ -142,6 +143,12 @@ export default class Entablado extends Scene {
   private W = new Words();
   private sumikat!: WordShape;
   private lihim!: WordShape;
+  /** the lines, for the hero words' audit marks */
+  private ln!: { l1: Line; l4: Line };
+  private track!: LyricTrack;
+  /** "Pero nanahimik na lang", carried over the cut: drawn over the gold */
+  private W2 = new Words();
+  private over!: LyricTrack;
   private sung!: { pinapanood: Word; sumikat: Word; sa: Word; paaralan: Word; nanonood: Word; nakatalikod: Word; ngumingiti: Word; lihim: Word };
   private T!: { cut: number; next: number; lit: number; hit: number; orbit0: number; crane0: number; crane1: number; turn0: number; turn1: number; orb0: number; orb1: number };
 
@@ -173,6 +180,71 @@ export default class Entablado extends Scene {
       orbit0: S.sa.start - 0.05, crane0: S.paaralan.end - 0.4, crane1: S.nanonood.end - 0.05,
       turn0, turn1, orb0: turn1 - 0.1, orb1: S.ngumingiti.start + 0.3,
     };
+    this.ln = { l1, l4 };
+    this.stageLyrics(L.find('nanahimik na lang', s0 - 4), l1, l2, l3, l4);
+  }
+
+  /**
+   * Every other word. The last of the previous line in ink on the gold of the cut; the
+   * stage lines across the banner over the stage, "ng ating" over the stage front as the
+   * orbit swings off the banner, PAARALAN hanging in the centre spot's beam; "Ako nama'y" over the back door, "nanonood lang" small beside the self in it;
+   * "Nakatalikod," on their other side; "ngumingiti / nang" by their face at the end,
+   * before their own "lihim".
+   */
+  private stageLyrics(l0: Line, l1: Line, l2: Line, l3: Line, l4: Line) {
+    const T = this.T, S = this.sung, w = Lyrics.word;
+    // ink while the gold covers the frame, flipping to paper as the hall shows through it
+    const ink = { rest: mul(lin('pencil'), 0.6), hot: mul(lin('ink'), 0.3) };
+    const onGold = (k: number, _i: number, _u: number, t: number) => {
+      const h = heat(l0.words[k], t), g = smoothstep(0.18, 0.3, diveIn(t, T.cut, 0.6));
+      return { col: mix3(mix3(TONE.labas.rest, TONE.labas.hot, h), mix3(ink.rest, ink.hot, h), g) };
+    };
+    this.over = new LyricTrack(this.W2).add(l0, {
+      voice: VOICE.loud, size: 0.36, wrap: 7, at: { pos: [0, 1.42, 10.7] },
+      out: T.cut + 0.3, exit: 'fall', exitDur: 0.35, each: onGold,
+    });
+
+    const BANNER: Place = { pos: [0, 4.25, -14.7] };
+    // as the orbit swings off the banner: over the front of the stage, near the pivot
+    const ating = w(l2, 'ating'), over = facing(this.cam(ating.start + 0.2).pos, [0, 3.8, -9.5]);
+    const beam = facing(this.cam(S.paaralan.start + 0.8).pos, [0, 5.4, -2.5]);
+    // at the end: right-aligned just left of the self's face, in the final frame
+    const wb = basis(this.selfCam(T.next - 0.05)), head = toWorld({ pos: SELF_POS, yaw: 0 }, figure(this.pose(T.next - 0.05)).head);
+    const small = 0.075, wNg = this.W.shape('ngumingiti', VOICE.quiet.font, VOICE.quiet.raster).w / VOICE.quiet.raster;
+    const face = madd(madd(head, wb.R, -0.2 - (wNg * small) / 2), wb.U, -0.03);
+    this.track = new LyricTrack(this.W)
+      .add(l1, {
+        voice: VOICE.loud, size: 0.85, wrap: 12, at: BANNER, skip: ['sumikat'],
+        enter: 'drop', out: S.sumikat.end - 0.05, exit: 'fall', exitDur: 0.35,
+      })
+      .add(l2, {
+        voice: VOICE.loud, size: 0.8, wrap: 12, at: BANNER, skip: ['ng', 'ating', 'paaralan'],
+        enter: 'drop', out: w(l2, 'entablado').end - 0.05, exit: 'fade',
+      })
+      .add(l2, {
+        voice: VOICE.loud, size: 0.55, at: over, skip: ['sa', 'entablado', 'paaralan'],
+        enter: 'rise', out: ating.end + 0.08, exit: 'fade', exitDur: 0.3,
+      })
+      .add(l2, {
+        voice: VOICE.loud, size: 1.1, at: beam, skip: but(l2, S.paaralan),
+        enter: 'rise', spread: 0.5, out: S.paaralan.end + 0.05, exit: 'burst', exitDur: 0.3,
+      })
+      .add(l3, {
+        voice: VOICE.quiet, size: 0.85, at: { pos: [0, 3.7, 14.4], right: [-1, 0, 0] }, skip: ['nanonood', 'lang'],
+        enter: 'drop', out: w(l3, 'nama').end + 0.1, exit: 'fade',
+      })
+      .add(l3, {
+        voice: VOICE.quiet, size: 0.15, at: { pos: [0.86, 1.45, 14.22], right: [-1, 0, 0] }, skip: but(l3, S.nanonood, w(l3, 'lang')),
+        enter: 'rise', out: w(l3, 'lang').end + 0.3, exit: 'fade',
+      })
+      .add(l4, {
+        voice: VOICE.quiet, size: 0.15, at: { pos: [-0.86, 1.62, 14.22], right: [-1, 0, 0] }, skip: but(l4, S.nakatalikod),
+        enter: 'rise', out: T.orb0 + 0.3, exit: 'fade',
+      })
+      .add(l4, {
+        voice: VOICE.quiet, size: small, layout: 'stack', align: 1, at: { pos: face, right: wb.R, up: wb.U },
+        skip: but(l4, S.ngumingiti, w(l4, 'nang')), enter: 'rise', travel: 0.5, exit: 'none',
+      });
   }
 
   // ---------------------------------------------------------------- the camera
@@ -288,7 +360,8 @@ export default class Entablado extends Scene {
 
     this.W.clear();
     this.wordSumikat(t, b);
-    this.wordLihim(t);
+    this.wordLihim(t, b);
+    this.track.draw(t, b);
     this.W.draw(out, b, { fog: FOG, nearFade: 0.3 });
 
     // the self: watching, then turned away; the light answers the beat as they smile
@@ -307,6 +380,11 @@ export default class Entablado extends Scene {
     if (kIn > 0) {
       fill!.draw(out, DIVE_COL, kIn, 'over');
       post = towardDive(post, kIn);
+    }
+    if (t < T.cut + 1) {
+      this.W2.clear();
+      this.over.draw(t, b);
+      this.W2.draw(out, b, { fog: FOG, nearFade: 0.3 });
     }
     return post;
   }
@@ -338,6 +416,7 @@ export default class Entablado extends Scene {
     // world-fixed, readable only from the hall side
     const front = smoothstep(-0.1, 0.25, dotV(norm(sub(b.pos, pos)), [0, 0, 1]));
     if (front <= 0) return;
+    let aSum = 0;
     this.W.word(this.sumikat, {
       pos, right: [1, 0, 0], up: [0, 1, 0], height: 1.95, col: mul(lin('paper'), 1.35), alpha: front,
       each: (i) => {
@@ -345,30 +424,40 @@ export default class Entablado extends Scene {
         const a = t - (w.c[i] ?? w.start);
         const flick = a < 0.12 ? (hash(frameIdx(t), i, 7) < 0.55 ? 1 : 0.2) : 1;
         const glow = 1 + 1.4 * Math.exp(-Math.max(a, 0) / 0.18);
-        return {
-          off: [0, (up - 1) * 1.6 + 0.04 * Math.sin(t * 2.1 + i), 0], tilt: (1 - up) * 0.9,
-          alpha: smoothstep(0, 0.04, k) * flick, col: mul(lin('paper'), 1.35 * glow),
-        };
+        const alpha = smoothstep(0, 0.04, k) * flick;
+        aSum += alpha;
+        return { off: [0, (up - 1) * 1.6 + 0.04 * Math.sin(t * 2.1 + i), 0], tilt: (1 - up) * 0.9, alpha, col: mul(lin('paper'), 1.35 * glow) };
       },
     });
+    LyricTrack.mark(this.ln.l1, w, b, pos, [1, 0, 0], 1.95, this.sumikat, (front * aSum) / 7);
   }
 
   /** lihim: the self's word, small, beside the light */
-  private wordLihim(t: number) {
+  private wordLihim(t: number, b: Basis) {
     const w = this.sung.lihim;
     if (t < w.start - 0.05) return;
     const wb = basis(this.selfCam(this.T.next - 0.05));
     const pos = madd(madd(SELF_CHEST, wb.R, 0.26), wb.U, 0.07);
+    let aSum = 0;
     this.W.word(this.lihim, {
       pos, right: wb.R, up: wb.U, height: 0.09, align: 0, col: mul(lin('paper'), 0.9),
       // the whole word has to be there before the cut, which comes before it's fully sung
       each: (i) => {
-        const at = lerp(w.start, Math.min(w.end, this.T.next - 0.3), i / 4);
+        const at = lerp(w.start, Math.min(w.end, w.start + 0.3, this.T.next - 0.3), i / 4);
         const k = ease.outCubic(prog(t, at - 0.04, at + 0.16));
+        aSum += k;
         return { off: mul(wb.U, (k - 1) * 0.02), alpha: k };
       },
     });
+    const mid = madd(pos, wb.R, ((this.lihim.w / this.lihim.r) * 0.09) / 2);
+    LyricTrack.mark(this.ln.l4, w, b, mid, wb.R, 0.09, this.lihim, aSum / 5, wb.U);
   }
 }
 
 const dotV = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/** a line's words other than `keep` (to skip them) */
+const but = (l: Line, ...keep: Word[]) => l.words.filter((w) => !keep.includes(w)).map((w) => w.w);
+
+/** the kit's heat: 1 while sung, fading after */
+const heat = (w: Word, t: number) => (t < w.start ? 0 : t <= w.end ? 1 : Math.exp(-(t - w.end) / 0.35));

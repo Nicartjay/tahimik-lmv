@@ -14,6 +14,12 @@
 // beat. On "buo" the flare: the chest goes off, the dome catches gold from the inside out,
 // the crown and the swirl blow away, BUO slams down into the arch letter by letter, the whole
 // floor turns to sea, and the camera dives into the light (a FLARE into gilid).
+//
+// Every other word is a shard too, in LOOB's warm serif: each flies out of the vortex on its
+// syllable and slams into place with a ring and sparks. "Sadyang" and "mahiyain" stand round
+// them in the burst and fall flat onto the floor on the snap overhead, where "lang talaga ako"
+// slams down under them; "At kung" lands over the crown; "ko" beside their head in bullet time,
+// swept up on the arch's slam onto its top, where "'to nang" joins it over BUO until the flare.
 
 import { FPS } from '../../engine/config';
 import type { RT } from '../../engine/gl';
@@ -32,6 +38,7 @@ import { Sea } from './_buo_sea';
 import { HERO, PAPER, SELF_INK } from './_dami_chorus';
 import { INK, LABAS_FOG, lerpPose, POSE, Sky, type Pose } from './_labas';
 import { GOLD, lightOf, Self } from './_self';
+import { facing, lens, LyricTrack, mixPlace, TONE, VOICE, type Place } from './_lyric';
 
 /** the Words kit's raster em (engine/3d/words.ts) */
 const EM = 320;
@@ -51,6 +58,20 @@ const IGNITE_V = 14;
 
 const OPEN: Pose = { ...POSE.stand, lean: -0.04, nod: -0.12, armL: [0.35, 0.7, 0.35], armR: [0.35, 0.7, 0.35] };
 const WIDE: Pose = { ...POSE.stand, lean: -0.14, nod: -0.4, armL: [0.15, 1.75, 0.1], armR: [0.15, 1.75, 0.1] };
+
+/** a sung word's flight out of the vortex into its place, s */
+const FLY = 0.12;
+const WORD_RING = mul(TONE.loob.hot, 0.7);
+
+/** a word that lands like a shard: its resting place (which may move on), width and seed */
+interface Land {
+  w: Word;
+  home: (t: number) => Place;
+  wide: number;
+  seed: number;
+  /** when it lands again somewhere else (a fall, a sweep) */
+  again?: number;
+}
 
 /** a knock: out and back, peaking ~.1 s after x = 0 */
 const knock = (x: number) => (x > 0 ? Math.exp(-x * 6) * (1 - Math.exp(-x * 40)) : 0);
@@ -113,6 +134,9 @@ export default class Buo extends Scene {
   /** shocks that open the sea (their fronts are its rim) */
   private reveals!: Shock[];
   private slams!: { single: number[]; down: number[] };
+  private track!: LyricTrack;
+  private line!: Line;
+  private lands!: Land[];
 
   async init() {
     sky ??= new Sky();
@@ -177,6 +201,86 @@ export default class Buo extends Scene {
       { t: d[2], R: 40, v: 36, amp: 0 },
       { t: buo, R: 220, v: 40, amp: 0 },
     ];
+    this.line = line;
+    this.stage(find('Sadyang'), line);
+  }
+
+  /** the sung words round the heroes, each a shard slammed into place on its syllable */
+  private stage(l41: Line, l42: Line) {
+    const { d, arch, buo } = this.T;
+    const V = VOICE.soft, wem = (s: string) => words!.shape(s, V.font, V.raster).w / V.raster;
+    const eye = (t: number) => basis(this.camera(t));
+    /** centres along a row of words at `size`, centred on 0 */
+    const row = (ws: Word[], size: number) => {
+      const w = ws.map((x) => wem(x.w) * size), gap = 0.42 * size;
+      let x = -(w.reduce((a, b) => a + b, 0) + gap * (w.length - 1)) / 2;
+      return w.map((ww) => ((x += ww + gap), x - gap - ww / 2));
+    };
+    /** a camera-relative point: across, up (world) and depth from the eye */
+    const rel = (b: Basis, x: number, y: number, z: number): V3 => add(madd(madd(b.pos, b.F, z), b.R, x), [0, y, 0]);
+    const land = (w: Word, home: (t: number) => Place, size: number, again?: number): Land => ({ w, home, wide: wem(w.w) * size, seed: hash(w.start, 7, 1), again });
+    const still = (p: Place) => () => p;
+
+    // Sadyang mahiyain, round them in the burst; then flat on the floor under the overhead
+    // with lang talaga ako, the rows square to that camera halfway through its spin
+    const [sad, mah, lang, tal, ako] = l41.words;
+    const bo = eye(192.9), Rf = norm([bo.R[0], 0, bo.R[2]]), Uf = norm([bo.U[0], 0, bo.U[2]]);
+    const FS = 1.05, rA = row([sad, mah], FS), rB = row([lang, tal, ako], FS);
+    const floor = (x: number, y: number): Place => ({ pos: add(madd(mul(Rf, x), Uf, y), [0, 0.03, 0]), right: Rf, up: Uf, size: FS });
+    const b1 = eye(190.2), b2 = eye(190.9);
+    const stand = [facing(b1, rel(b1, -2, 0.85, 6.5), 0.6), facing(b2, rel(b2, 2.3, -0.9, 6), 0.6)];
+    const fall = (j: number) => (t: number) => mixPlace(stand[j], floor(rA[j], 2.9), prog(t, d[0] - 0.05, d[0] + 0.22, ease.inCubic));
+    const L41 = [land(sad, fall(0), FS, d[0] + 0.22), land(mah, fall(1), FS, d[0] + 0.22), ...[lang, tal, ako].map((w, j) => land(w, still(floor(rB[j], -2.9)), FS))];
+
+    // At kung, over the crown's left end, as TANGGAPIN starts
+    const [at, kung, , ko, to, nang] = l42.words;
+    const bc = eye(195.2), top = add(add(CROWN_C, [0, 0, CROWN_R]), [0, 0.55, 0]), rC = row([at, kung], 0.42);
+    const crown = (x: number) => still(facing(bc, madd(madd(top, bc.R, -0.8), bc.R, x), 0.42));
+    // ko beside their head in bullet time; the arch's slam sweeps it onto its top, where ’to
+    // and nang join it over BUO
+    const bh = eye(197.1), MS = 1.15, rM = row([ko, to, nang], MS);
+    const bm = eye(198), mq = (x: number) => facing(bm, madd([0, 6.85, ARCH_C[2] + 0.2], facing(bm, [0, 0, 0]).right!, x), MS);
+    const side = facing(bh, madd(add(CROWN_C, [0, -0.4, 0]), bh.R, 0.95), 0.32);
+    const sweep = (t: number) => mixPlace(side, mq(rM[0]), prog(t, arch - 0.03, arch + 0.25, ease.inOutCubic));
+    const L42 = [land(at, crown(rC[0]), 0.42), land(kung, crown(rC[1]), 0.42), land(ko, sweep, MS, arch + 0.25), land(to, still(mq(rM[1])), MS), land(nang, still(mq(rM[2])), MS)];
+    this.lands = [...L41, ...L42];
+
+    const by = (ls: Land[]) => new Map(ls.map((x) => [x.w, x]));
+    const m41 = by(L41), m42 = by(L42);
+    const o = { voice: V, size: 0.6, tone: TONE.loob, enter: 'type' as const, spread: 0, at: { pos: HUB } };
+    this.track = new LyricTrack(words!)
+      .add(l41, { ...o, wordAt: (k, t) => this.fly(m41.get(l41.words[k])!, t), out: d[1] - 0.03, exit: 'burst', exitDur: 0.25 })
+      .add(l42, { ...o, wordAt: (k, t) => this.fly(m42.get(l42.words[k])!, t), skip: ['tanggapin', 'ko', 'to', 'nang', 'buo'], out: d[2] - 0.25, exit: 'burst', exitDur: 0.2 })
+      .add(l42, { ...o, wordAt: (k, t) => this.fly(m42.get(l42.words[k])!, t), skip: ['at', 'kung', 'tanggapin', 'buo'], out: buo + 0.02, exit: 'scatter', exitDur: 0.6 })
+      // "kilala", still being sung over the cut, where the corner left it
+      .tail(this.lyrics, this.params.cut, { voice: VOICE.quiet, size: 1, tone: TONE.lit, at: (_t, b) => lens(b, 0.55, -0.1, 3, 0.085) });
+  }
+
+  /** a word's place at t: out of the vortex, tumbling, into its home, where it jolts */
+  private fly(ld: Land, t: number): Place {
+    const H = ld.home(t), size = H.size ?? 0.6, t0 = ld.w.start;
+    const R = norm(H.right ?? [1, 0, 0]), U = norm(H.up ?? UP), N = cross(R, U);
+    const e = prog(t, t0, t0 + FLY, ease.inCubic);
+    if (e >= 1) {
+      const dt = Math.min(t - t0 - FLY, ld.again !== undefined && t >= ld.again ? t - ld.again : Infinity);
+      return { pos: madd(H.pos, N, 0.2 * size * Math.sin(dt * 45) * Math.exp(-dt * 18)), right: R, up: U, size: size * (1 + 0.3 * Math.exp(-dt / 0.07)) };
+    }
+    const th = Math.atan2(H.pos[0], H.pos[2]) + 1.2 + ld.seed, q = vortexAt(3 + 0.8 * ld.seed, H.pos[1] + 0.8, th, ld.seed, this.vx(t));
+    const a = (1 - e) * (ld.seed < 0.5 ? 2.4 : -2.4);
+    return { pos: mix3(q, H.pos, e), right: rotAxis(R, N, a), up: rotAxis(U, N, a), size: size * lerp(0.6, 1, e) };
+  }
+
+  /** the words' landings: a ring out in the word's plane, sparks off it */
+  private landings(L: LineBatch, P: GlowPoints, t: number, hot: RGB) {
+    for (const ld of this.lands) {
+      for (const tl of [ld.w.start + FLY, ld.again ?? -1]) {
+        const u = (t - tl) / 0.45;
+        if (tl < 0 || u < 0 || u >= 2) continue;
+        const H = ld.home(t), R = norm(H.right ?? [1, 0, 0]), U = norm(H.up ?? UP);
+        if (u < 1) L.ring(H.pos, ld.wide * (0.45 + 0.6 * ease.outCubic(u)), R, U, 1.5, WORD_RING, 0.8 * (1 - u) ** 2, 48);
+        this.burst(P, H.pos, tl, t, 14, hot, tl * 11);
+      }
+    }
   }
 
   /** the vortex's clock: song time since the cut, but it all but stops for the kick gap */
@@ -326,6 +430,7 @@ export default class Buo extends Scene {
       this.burst(P, sh.home.c, sh.ts, t, sh.kind === 'arch' ? 60 : 18, hot, sh.ts * 7);
       if (t >= buo) this.burst(P, sh.home.c, buo + dist(sh.home.c, HUB) / IGNITE_V, t, 12, mul(gold, 1.6), sh.ts * 3);
     }
+    this.landings(L, P, t, hot);
     L.draw(out, b, { fog: LABAS_FOG, nearFade: 1.5 });
 
     self!.draw(out, b, t, {
@@ -335,8 +440,9 @@ export default class Buo extends Scene {
     }, { fog: [30, 0.006] });
 
     const W = words!.clear();
-    this.tanggapin(W, t, v, gold);
-    this.buoWord(W, P, t, gold);
+    this.tanggapin(W, t, v, gold, b);
+    this.buoWord(W, P, t, gold, b);
+    this.track.draw(t, b);
     W.draw(out, b);
     P.draw(out, b, { fog: LABAS_FOG, nearFade: 1.8 });
 
@@ -354,6 +460,7 @@ export default class Buo extends Scene {
       impact(t, [buo], { flash: 0.3, ca: 1.2, shake: 16, tau: 0.35, seed: 11 }),
       impact(t, this.w.buo.c.slice(1), { ca: 0.5, shake: 7, tau: 0.14, seed: 13 }),
       impact(t, [d[3]], { ca: 0.6, shake: 8, tau: 0.2, seed: 15 }),
+      impact(t, this.lands.flatMap((x) => [x.w.start + FLY, ...(x.again ? [x.again] : [])]), { ca: 0.25, shake: 3, tau: 0.08, seed: 17 }),
     ), dive);
   }
 
@@ -370,12 +477,14 @@ export default class Buo extends Scene {
   }
 
   /** TANGGAPIN: each letter out of the vortex, slammed into the crown on its syllable */
-  private tanggapin(W: Words, t: number, v: Vx, gold: RGB) {
+  private tanggapin(W: Words, t: number, v: Vx, gold: RGB, b: Basis) {
     const w = this.w.tang, S = this.S.tang, { buo } = this.T;
     if (t < w.start - 0.9 || t > buo + 0.6) return;
     const k = CROWN_H / EM, width = S.w * k;
     const pos = add(CROWN_C, [0, 0, CROWN_R]);
     const bo = prog(t, buo, buo + 0.5, ease.outCubic);
+    // what reads: the letters already in the crown
+    let set = 0;
     W.word(S, {
       pos, right: [1, 0, 0], up: UP, height: CROWN_H, col: mul(PAPER, 1.25),
       each: (i, u) => {
@@ -396,20 +505,24 @@ export default class Buo extends Scene {
         if (bo > 0) p = add(p, [Math.sin(th) * 7 * bo, (1.5 + 2 * hash(i, 9, 5)) * bo, Math.cos(th) * 7 * bo]);
         const a = smoothstep(ci - 0.75, ci - 0.45, t) * (e < 1 ? 0.75 : 1) * (1 - bo);
         const col = mul(mix3(PAPER, mul(gold, 0.9), bo), 1.25 * (1 + 2.5 * decay(t, [ci], 0.1)));
+        if (e >= 1) set += a / S.glyphs.length;
         return { off: sub(p, flat), tilt, spin, scale, alpha: a, col };
       },
     });
+    LyricTrack.mark(this.line, w, b, pos, [1, 0, 0], CROWN_H, S, set);
   }
 
   /** BUO: dropped letter by letter into the arch, gold hot enough to bloom white */
-  private buoWord(W: Words, P: GlowPoints, t: number, gold: RGB) {
+  private buoWord(W: Words, P: GlowPoints, t: number, gold: RGB, b: Basis) {
     const w = this.w.buo, S = this.S.buo;
     if (t < w.start - 0.25) return;
     const k = BUO_H / EM, width = S.w * k;
+    let set = 0;
     W.word(S, {
       pos: BUO_POS, right: [1, 0, 0], up: UP, height: BUO_H, col: gold,
       each: (i, u) => {
         const ci = w.c[i] ?? w.start, e = prog(t, ci - 0.2, ci, ease.inCubic), dt = t - ci;
+        set += (smoothstep(0.85, 1, e) * smoothstep(ci - 0.2, ci - 0.12, t)) / S.glyphs.length;
         return {
           off: [0, 9 * (1 - e), 0],
           tilt: dt > 0 ? 0.25 * Math.sin(dt * 30) * Math.exp(-dt * 12) : 0,
@@ -419,6 +532,7 @@ export default class Buo extends Scene {
         };
       },
     });
+    LyricTrack.mark(this.line, w, b, BUO_POS, [1, 0, 0], BUO_H, S, set);
     for (let i = 0; i < w.c.length; i++) {
       const x = (i + 0.5) / w.c.length - 0.5;
       this.burst(P, add(BUO_POS, [x * width, -BUO_H * 0.3, 0]), w.c[i], t, 36, mul(gold, 2), 70 + i);

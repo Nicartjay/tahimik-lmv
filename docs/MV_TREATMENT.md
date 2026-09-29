@@ -21,10 +21,18 @@ with a moving camera, shot through an adaptive motion-blur shutter
 - **The edge until GITNA.** In LABAS the self stands at the rim of the crowd, the yard, the
   hall. The spotlight hunts the centre. From DAMI III the light finds them and they stay;
   at GITNA they walk into the middle.
-- **Kinetic hero words, not subtitles.** A handful of words per scene, word-synced and big,
-  standing in the world: flown past, stamped, shattered, orbited. Archivo extra-condensed
-  for the loud world and the hero words; Fraunces italic for the self's own quiet ones
-  (*huminga*, *lihim*, *dahan-dahan lang*, *pero ako ’to*).
+- **Every word, sung into the world.** All 220 sung words are on screen as they are sung,
+  as in p(doom): there is no subtitle layer. Each scene sets its own lines in its world, so
+  they move and blur with it: built on a wall, riding a wave, flown through. A word
+  appears on its sung start, is hot while it is sung and has settled by its end. A line
+  holds until the next one, then leaves. Archivo extra-condensed is for the loud world and
+  the choruses; Fraunces italic is the self's quiet voice (most verse lines); IBM Plex Mono
+  is for captions. A word still being sung over a cut is held where the last shot left it
+  on screen, so the line goes on under the cut. Over the lines, a handful of words per
+  scene are **hero words**, big and flown past, stamped, shattered or orbited. They are
+  Archivo for the world and Fraunces for the self's own (*huminga*, *lihim*, *dahan-dahan
+  lang*, *pero ako ’to*). `node scripts/render.ts lyrics --film mv` checks that every word
+  is legible while it is sung: in frame, big enough, upright.
 - **The cut is the move.** Every cut is hard, on a beat, on a frame boundary; the energy is
   in the camera (whips, crash zooms, cranes, corkscrews), never in a crossfade or a post
   shake.
@@ -66,6 +74,47 @@ with a moving camera, shot through an adaptive motion-blur shutter
 | 17 | BUO | 189.37–200.03 | IMPACT | both | The chest bursts and every world so far comes out in pieces (a patch of wave, the throat's rings, a note, a photo frame, the stage arch), wheeling in a vortex over a disc of firefly sea. One shard slams into place per beat; TANGGAPIN crowns their head letter by letter; the vortex hangs in bullet time; on *“buo”* the flare, and BUO slams into the arch. | TANGGAPIN · BUO |
 | 18 | GITNA | 200.03–210.08 | FLARE | LABAS floods | The self walks down the lane into the centre of a crowd that has turned to face them. On *“Mag-stand”* fireflies burst from the chest and a ring runs out through the crowd, tinting every line warm; on *“ako”* (LIWANAG 1.0) a second ring to the horizon, thousands of lights over the whole world, and a crane away to planet scale: one light at the centre of a little world. | MAG-STAND OUT DIN AKO |
 | 19 | WAKAS | 210.08–end | CONT | quiet | The little world folds back into the one light, the far side first, while the camera comes back down to it: a single firefly in the dark, as at the start. The title under it; the last light goes out. | TAHIMIK · *pero ako ’to* |
+
+## The lines
+
+Where each scene sets the words that aren't hero words.
+
+- **GILID.** The self's quiet voice. *Nakatayo sa* hangs over the ring as the camera pulls
+  away, *lang* sits on GILID's shoulder, and *pero ’di sumasabay* stands over the six: the
+  one thing besides the self that doesn't sway.
+- **ALON.** *Tawa nila parang alon* rides the swell, each letter lifted by the wave in turn;
+  *Ako ’yung … sa tabing-baybayin* is set by the rock as BATO lands.
+- **LALAMUNAN.** Everything rides the throat. *na sa isipan* rushes up slower than the chase,
+  so the camera flies through each word; *Pero ’di makalusot sa lalamunan* jams in rows
+  against the knot; *Nagpapaliban* is shoved back down at us; *Baka pagtawanan lang* shakes
+  with each laugh.
+- **DAMI NG TAO.** Slammed into the crowd round the clearing as the crane climbs, laid flat
+  on the crowd under the search, set beside SENTRO. In II each line holds its place on
+  screen through the smash cuts, paper in LABAS and gold in LOOB; in III it is lit.
+- **SULOK.** Quiet on the corner's walls, either side of the self, and carried out with
+  them as they recede. In II the same words hang in the same places on both sides of every
+  cut; in III they turn with the orbit round the self as they stand.
+- **SIMULA NOON.** Each word is typed beside the print we pass as it is sung. In I *simula*
+  peels off its print, runs ahead of the lens and comes to rest over NOON; in II the lines
+  are written in gold over the constellations.
+- **SARILING MUNDO.** In I *Pero kahit ’di ako sumisigaw* is a caption typed over the crowd
+  like its meters, and *May sarili rin akong* rises out of the gold in the self's own
+  flies, under MUNDO. In II each word is left in the sky where the camera looked as it was
+  sung, and the second line rides the fly-in above the head.
+- **BULSA.** Written in the self's light: *May mga* on the packed notes, *sa dibdib* rising
+  under KWENTO, *Nakatupi sa bulsa ng pantalon* flying with the flock, *Gustong-gusto kong*
+  on the letter as it opens, and *nanahimik* diving back into the pocket. The last *na lang*
+  is a shadow in the light, held through the dive into ENTABLADO.
+- **ENTABLADO.** On the banner and over the stage as the camera circles; *Ako nama’y nanonood
+  lang* at the back of the hall; *ngumingiti nang* beside the self and *lihim* by the light.
+- **ISANG HAKBANG.** LOOB's warm serif round the three hero words: the lead-in rising under
+  LAKAS-LOOB, *paabante* at the foot and thrown out on the shockwave, the third line over
+  the sea in the wide, *Pwede namang … lang* either side of the crane.
+- **BUO.** Every word is a shard: it flies out of the vortex on its syllable and slams into
+  place with a ring. *Sadyang mahiyain* falls flat on the floor on the snap overhead, where
+  *lang talaga ako* slams down under it; *At kung* lands over the crown.
+- **GITNA.** *Baka sa tahimik kong paraan* rises word by word out of the crowd's faces,
+  round the ring above them, turned in to the self.
 
 `node scripts/mv-cues.mjs` prints the edit (every entry's window and LIWANAG), and with
 `--only <scene>` the bars, lines and word times inside it.

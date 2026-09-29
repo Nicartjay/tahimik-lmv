@@ -8,18 +8,19 @@
 
 import { sans } from '../../engine/fonts';
 import type { RT } from '../../engine/gl';
-import { Lyrics, type Word } from '../../engine/lyrics';
+import { Lyrics, type Line, type Word } from '../../engine/lyrics';
 import { lin } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { clamp, ease, hash, keys, lerp, prog, smoothstep, TAU, window01 } from '../../engine/util';
 import { basis, cam, handheld, lerpCam, orbit, shots, type Basis, type Cam } from '../../engine/3d/camera';
 import { LineBatch } from '../../engine/3d/lines';
 import { add, cross, madd, mix3, mul, norm, sub, type V3 } from '../../engine/3d/math';
-import { Words, type WordShape } from '../../engine/3d/words';
+import { Words, type GlyphXf, type WordShape } from '../../engine/3d/words';
 import { DIVE_COL, diveOut, Fill, impact, mergePost, towardDive } from './_fx';
 import { POSE, Sky, type Pose } from './_labas';
 import { lightOf, Self } from './_self';
 import { Sea, seaClock, seaN, seaY, Spray, type SeaState } from './_alon_sea';
+import { facing, LyricTrack, VOICE, type Place } from './_lyric';
 
 let sky: Sky | null = null, self: Self | null = null, fill: Fill | null = null;
 
@@ -59,7 +60,9 @@ export default class Alon extends Scene {
   private W = new Words();
   private haha!: WordShape;
   private bato!: WordShape;
-  private sung!: { tawa: Word[]; bato: Word; ako: Word };
+  private sung!: { tawa: Word[]; bato: Word; ako: Word; sa: Word; tabing: Word };
+  private l2!: Line;
+  private track!: LyricTrack;
   private T!: { cut: number; next: number; rise0: number; crest: number; whip1: number; brk: number; out0: number; out1: number; tauB: number };
 
   async init() {
@@ -78,7 +81,8 @@ export default class Alon extends Scene {
 
     const l1 = this.lyrics.find('Tawa nila', this.ctx.start - 1), l2 = this.lyrics.find('bato sa tabing', this.ctx.start);
     const w = (l: typeof l1, q: string) => Lyrics.word(l, q);
-    this.sung = { tawa: ['tawa', 'nila', 'parang', 'alon'].map((q) => w(l1, q)), bato: w(l2, 'bato'), ako: w(l2, 'ako') };
+    this.sung = { tawa: ['tawa', 'nila', 'parang', 'alon'].map((q) => w(l1, q)), bato: w(l2, 'bato'), ako: w(l2, 'ako'), sa: w(l2, 'sa'), tabing: w(l2, 'tabing') };
+    this.l2 = l2;
     const A = this.audio, cut: number = this.params.cut, next: number = this.params.next;
     const bar = (t: number) => A.timeOfBar(Math.round(A.barAt(t)));
     const alon = this.sung.tawa[3];
@@ -88,6 +92,54 @@ export default class Alon extends Scene {
     this.T = T;
     // spray from where the lip lands and off the rock itself
     this.spray = new Spray(2000, T.tauB - 0.04, 0.5, (x) => ZB + 1.5 * Math.sin(0.045 * x) + 3.4, 28, 9);
+    this.track = this.stageLyrics(l1, l2);
+  }
+
+  /**
+   * Every other word. The laughter rides the swell a few metres ahead of us, rolling with
+   * it; "alon" is lifted with us up the giant wave as we look along it; the rock line builds
+   * round the rock: "Ako 'yung" beside it, BATO (the scene's), "sa" over the self's head,
+   * "tabing-baybayin" on the shore side as the wave comes down.
+   */
+  private stageLyrics(l1: Line, l2: Line): LyricTrack {
+    const T = this.T, S = this.sung;
+    // a wave running along the line: each letter lifted and tipped by it in turn
+    const roll = (amp: number) => (k: number, _i: number, u: number, t: number): GlyphXf => {
+      const ph = 2.2 * (k + u) - 6.5 * (t - T.cut);
+      return { off: [0, amp * Math.sin(ph), 0], spin: -0.12 * Math.cos(ph) };
+    };
+    // on the water just ahead of the lens, lifted and dropped by the swell under it
+    const surf = (t: number): Place => {
+      const c = this.rideCam(t), Sn = this.state(t);
+      const [cx, , cz] = c.pos, x = 0.8 * cx, z = cz + 3.4;
+      return facing(c.pos, [x, seaY(x, z, Sn) + 0.3, z]);
+    };
+    // up the wave beside us, carried with the lens: the view swings on to it, then off it
+    const alon = S.tawa[3], cr = this.rideCam(alon.start + 0.25), rb = basis(cr);
+    const a0 = madd(madd(madd(cr.pos, rb.F, 5.5), rb.R, -0.8), rb.U, -0.45);
+    const beside = (t: number): Place => ({ ...facing(cr.pos, a0), pos: add(a0, sub(this.rideCam(t).pos, cr.pos)) });
+    const beach = this.beachCam(S.ako.start + 0.4).pos, rock = this.rockCam(S.tabing.start + 0.6).pos;
+    return new LyricTrack(this.W)
+      .add(l1, {
+        voice: VOICE.quiet, size: 0.46, at: surf, skip: ['alon'],
+        enter: 'rise', travel: 1.3, settle: 0.26, out: S.tawa[2].end, exit: 'fall', exitDur: 0.4, each: roll(0.05),
+      })
+      .add(l1, {
+        voice: VOICE.quiet, size: 1.3, at: beside, skip: but(l1, alon),
+        enter: 'rise', travel: 0.8, settle: 0.22, spread: 0.2, out: T.crest + 0.15, exit: 'fall', exitDur: 0.4, each: roll(0.12),
+      })
+      .add(l2, {
+        voice: VOICE.quiet, size: 0.9, at: facing(beach, [-3.5, 2.7, -0.4]), skip: ['bato', 'sa', 'tabing-baybayin'],
+        enter: 'drop', travel: 0.8, out: S.sa.start, exit: 'fall', exitDur: 0.35,
+      })
+      .add(l2, {
+        voice: VOICE.quiet, size: 0.6, at: (_t, b) => facing(b, [0, 3.4, 0.2]), skip: but(l2, S.sa),
+        enter: 'slam', punch: 0.4, out: S.tabing.end + 0.1, exit: 'fade',
+      })
+      .add(l2, {
+        voice: VOICE.quiet, size: 0.42, at: facing(rock, [0.35, 1.25, 2.6]), skip: but(l2, S.tabing),
+        enter: 'rise', out: S.tabing.end + 0.1, exit: 'scatter', exitDur: 0.45,
+      });
   }
 
   private clock(t: number, T = this.T) {
@@ -177,6 +229,7 @@ export default class Alon extends Scene {
     this.W.clear();
     this.wordsHaha(t, b);
     this.wordBato(t, b);
+    this.track.draw(t, b);
     this.W.draw(out, b, { fog: FOG, nearFade: 0.8 });
 
     // the light dims under the water and comes back
@@ -255,6 +308,7 @@ export default class Alon extends Scene {
     const hits = this.batoHits();
     const dS = this.state(t).tau - this.T.tauB;
     if (dS > 0.3) return;
+    let aSum = 0;
     this.W.word(this.bato, {
       pos, right, up: [0, 1, 0], height: 2.6, col: mul(lin('ash'), 1.15), alpha: front,
       each: (i) => {
@@ -262,8 +316,14 @@ export default class Alon extends Scene {
         // the water takes the word (not the rock): swept up the beach, tumbling, in the sea's slow clock
         const sw = Math.max(dS - 0.04 - 0.03 * i, 0);
         const off: V3 = [0.8 * sw * (i - 1.5), (1 - k) * 4.5 + 2.2 * sw - 6 * sw * sw, 5 * sw];
-        return { off, alpha: smoothstep(land - 0.16, land - 0.1, t) * (1 - smoothstep(0.03, 0.15, sw)), spin: (1 - k) * 0.3 * (i % 2 ? 1 : -1) + 3 * sw * (i % 2 ? 1 : -1), tilt: -2.5 * sw };
+        const alpha = smoothstep(land - 0.16, land - 0.1, t) * (1 - smoothstep(0.03, 0.15, sw));
+        aSum += alpha;
+        return { off, alpha, spin: (1 - k) * 0.3 * (i % 2 ? 1 : -1) + 3 * sw * (i % 2 ? 1 : -1), tilt: -2.5 * sw };
       },
     });
+    LyricTrack.mark(this.l2, w, b, pos, right, 2.6, this.bato, (front * aSum) / 4);
   }
 }
+
+/** a line's words other than `keep` (to skip them) */
+const but = (l: Line, ...keep: Word[]) => l.words.filter((w) => !keep.includes(w)).map((w) => w.w);

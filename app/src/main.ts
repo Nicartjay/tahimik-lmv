@@ -6,6 +6,7 @@ import { Engine } from './engine/engine';
 import { loadFonts } from './engine/fonts';
 import { gl, initGL, rendererInfo } from './engine/gl';
 import { Lyrics } from './engine/lyrics';
+import { atlasFill } from './engine/3d/words';
 import { films } from './films';
 
 const q = new URLSearchParams(location.search);
@@ -96,6 +97,19 @@ function exposeApi(engine: Engine) {
         };
       });
     },
+
+    /** render each t (1 sample) and take the lyric coverage record there (mv/scenes/_lyric.ts) */
+    probe(times: number[]) {
+      const take = (window as any).__lyricSeen as (() => Record<string, number>) | undefined;
+      return times.map((t) => {
+        take?.();
+        engine.render(t, 1);
+        return { t, label: engine.current(t)?.label ?? '', seen: take?.() ?? {} };
+      });
+    },
+
+    /** fraction of the shared glyph atlas in use */
+    atlas: () => atlasFill(),
 
     /** render frames [from, to) and POST them in order to /__frame; returns frame count */
     async exportRange(from: number, to: number, samples: Samples = 1, shutter = 0.5): Promise<number> {

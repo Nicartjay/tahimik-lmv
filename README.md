@@ -59,6 +59,7 @@ node scripts/render.ts bench                        # ms/frame for every plate a
 node scripts/render.ts --film mv                    # the music video → out/tahimik_mv.mp4
 node scripts/render.ts sheet --film mv --n 40       # its contact sheet → out/mv/sheet.png
 node scripts/render.ts bench --film mv --samples auto
+node scripts/render.ts lyrics --film mv             # is every sung word legible as it is sung?
 node scripts/mv-cues.mjs --only alon                # cut windows + sung words/bars per scene
 ```
 
@@ -113,7 +114,7 @@ app/
   src/engine/3d/  camera, instanced lines/points/words, SDF chunks (music video)
   src/timeline.ts the cut list, anchored to lyric lines and snapped to beats
   src/films.ts    ?film=lmv | mv
-  src/mv/         the music video: timeline.ts, scenes/ (_labas, _loob, _self, _fx kits)
+  src/mv/         the music video: timeline.ts, scenes/ (_labas, _loob, _self, _fx, _lyric kits)
   scripts/        render.ts — headless Chrome → ffmpeg; mv-cues.mjs — MV cue sheets
 docs/             treatment and engine notes
 ```

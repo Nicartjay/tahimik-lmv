@@ -8,10 +8,14 @@
 // v2  smash cuts on the downbeats between the corridor and LOOB's sky, where fireflies light
 //     up the same sketch as a constellation over the sea; the last is 2008, the child's
 //     chest flares on "noon" and the camera dives into it (the frames before the cut are gold).
+//
+// the lines: each word is typed beside the print we pass as it is sung, on the corridor's side
+// of it; in v1 "simula" peels off print 2016 on the rush, runs ahead of the lens and comes to
+// rest over NOON. In LOOB's sky the lines are written over the constellations in firefly gold.
 
 import type { RT } from '../../engine/gl';
 import { mono } from '../../engine/fonts';
-import { Lyrics, type Word } from '../../engine/lyrics';
+import { Lyrics, type Line, type Word } from '../../engine/lyrics';
 import { lin } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { ease, hash, lerp, prog, smoothstep } from '../../engine/util';
@@ -22,6 +26,7 @@ import { GlowPoints } from '../../engine/3d/points';
 import type { WordShape } from '../../engine/3d/words';
 import { beats, bars, decay, DIVE_COL, diveOut, impact, mergePost, towardDive } from './_fx';
 import { INK } from './_labas';
+import { lens, LyricTrack, mixPlace, TONE, VOICE, type Place } from './_lyric';
 import { GOLD, lightOf } from './_self';
 import { chorusGrid, Flies, HERO, kit, PAPER, planeAxes, SELF_INK, smashIdx, tintUniforms, toFrame } from './_dami_chorus';
 import { ageOf, BACK, FIG, FRAME, IMG, N_PRINTS, ringPts, SELF, sketch, YEAR0, type P2, type Sketch } from './_noon_prints';
@@ -92,6 +97,20 @@ function corridor() {
     }
   }
   return (corr = { lines, cards, sk, P });
+}
+
+/** v1's last move: from before the last print (Sp) through the O into the child's head (E) */
+function throughO(): { Sp: V3; E: V3; head: V3 } {
+  const { P, sk } = corridor(), head = onPrint(P[LAST], sk[LAST].head);
+  return { Sp: [0, EYE, zOf(LAST - 1) - 2.1], E: add(head, [0, 0, 0.36]), head };
+}
+
+/** v1: NOON before the last print, its first O on the line to the ringed child */
+const NOON_H = 0.75;
+function noonPos(S: WordShape): V3 {
+  const { Sp, E } = throughO(), kk = NOON_H / S.r, zW = zOf(LAST) + 1.7, g1 = S.glyphs[1];
+  const Q = mix3(Sp, E, (zW - Sp[2]) / (E[2] - Sp[2]));
+  return sub(sub(Q, [(g1.cx - 0.5 * S.w) * kk, 0, 0]), [0, (g1.cy - 0.36 * S.r) * kk, 0]);
 }
 
 let marks: { rings: LineBatch; sparks: GlowPoints } | null = null;
@@ -193,6 +212,43 @@ function constellations(ks: number[]) {
 
 let chestStar: GlowPoints | null = null;
 
+// ---------------------------------------------------------------- the lines
+
+/** a caption beside a print: em size, gap to the print's edge and height on it (print units), row pitch (em) */
+const CAP = { size: 0.42, gap: 0.14, y: -0.25, lead: 1.15 };
+type Beside = [print: number, row: number, rows: number] | null;
+/**
+ * where each word of "Sadyang mahiyain lang talaga ako" and "Ganito na yata 'ko simula"
+ * hangs; a word still sung when the camera surges on hangs beside the next prints too
+ */
+const BESIDE: Beside[][][] = [
+  [
+    [[0, 0, 1], [1, 0, 1], [4, 0, 2], [4, 1, 2], [5, 0, 1]],
+    [null, [2, 0, 1], null, null, [6, 0, 1]],
+    [null, [3, 0, 1], null, null, null],
+  ],
+  [
+    [[7, 0, 1], [8, 0, 2], [8, 1, 2], [10, 0, 1], [11, 0, 1]],
+    [null, null, [9, 0, 1], null, null],
+  ],
+];
+/** the lines in LOOB's sky, em (metres) */
+const SKY_EM = 7;
+
+/** a word's letters following its syllables but all in within `spread` s, so the whole word reads while it is sung */
+const squeeze = (w: Word, spread: number): Word => {
+  const k = Math.min(1, spread / Math.max(1e-3, w.end - w.start));
+  return { ...w, c: w.c.map((c) => w.start + (c - w.start) * k), end: w.start + (w.end - w.start) * k };
+};
+
+/** word k's place beside its print, on the corridor's side, the rows flush to the print's edge */
+function beside(at: NonNullable<Beside>, wem: number, t: number): Place {
+  const [k, row, rows] = at, p = corridor().P[k];
+  const x = -sideOf(k) * (0.8 * p.sc + CAP.gap + (wem * CAP.size) / 2);
+  const y = CAP.y + ((rows - 1) / 2 - row) * CAP.lead * CAP.size;
+  return { pos: add(madd(madd(p.c, p.u, x), p.v, y), [0, bob(p, k, t), 0]), right: p.u, up: p.v };
+}
+
 // ---------------------------------------------------------------- the scene
 
 const YEAR = mono(100, 400, false, 2);
@@ -200,12 +256,20 @@ const YEAR = mono(100, 400, false, 2);
 export default class Noon extends Scene {
   maxSamples = 108;
   private w!: Word;
+  /** NOON's letters, squeezed */
+  private wq!: Word;
   private S!: WordShape;
   private years!: WordShape[];
   private B!: number[];
   private flies?: Flies;
   /** v2: the print whose constellation the first LOOB shot shows */
   private kSky = 2;
+  /** "Sadyang mahiyain…" and "Ganito na yata 'ko…" */
+  private L!: [Line, Line];
+  /** the lines in the corridor, and (v2) in the sky */
+  private track!: LyricTrack;
+  private skyTrack!: LyricTrack;
+  private nPos!: V3;
 
   get v(): number {
     return this.params.v ?? 1;
@@ -213,8 +277,11 @@ export default class Noon extends Scene {
 
   async init() {
     const cut: number = this.params.cut, next: number = this.params.next;
-    this.w = Lyrics.word(this.lyrics.find('Ganito na yata', cut - 1), 'noon');
+    this.L = [this.lyrics.find('Sadyang mahiyain', cut - 1), this.lyrics.find('Ganito na yata', cut - 1)];
+    this.w = Lyrics.word(this.L[1], 'noon');
+    this.wq = squeeze(this.w, 0.25);
     this.S = kit.words.shape('NOON', HERO);
+    this.nPos = noonPos(this.S);
     this.years = [...Array(N_PRINTS)].map((_, k) => kit.words.shape(String(YEAR0 - k), YEAR));
     this.B = beats(this.audio, cut - 0.1, next + 1);
     corridor();
@@ -230,6 +297,51 @@ export default class Noon extends Scene {
       chestStar = new GlowPoints(4);
       this.flies = new Flies(2000, 50, 31);
     }
+    this.stage();
+  }
+
+  /** the lines: typed beside the prints; in v1 "simula" runs ahead to NOON, in v2 the sky has its own */
+  private stage() {
+    const v = VOICE.quiet, wem = (s: string) => kit.words.shape(s, v.font, v.raster).w / v.raster;
+    this.track = new LyricTrack(kit.words);
+    // "kilala", still being sung over the cut, where the corner left it
+    const [x, y, em, roll] = this.v === 1 ? [0.51, 0.12, 0.1, -0.26] : [0.35, 0.05, 0.075, -0.09];
+    this.track.tail(this.lyrics, this.params.cut, { voice: v, size: 1, tone: TONE.labas, at: (_t, b) => lens(b, x, y, 3, em, roll) });
+    this.L.forEach((L, j) => {
+      const ws = L.words.map((w) => wem(w.w));
+      BESIDE[j].forEach((at, n) =>
+        this.track.add(L, {
+          voice: v, size: CAP.size, at: { pos: [0, 0, 0] }, enter: 'type', spread: 0.2, tone: TONE.labas,
+          skip: L.words.filter((_, k) => !at[k]).map((w) => w.w),
+          wordAt: (k, t) => {
+            const P = beside(at[k]!, ws[k], t);
+            return this.v === 1 && j === 1 && k === 4 && n === 0 ? this.simula1(t, P) : P;
+          },
+        }),
+      );
+    });
+    if (this.v !== 2) return;
+    // over the constellations, square to the sea: the first line over print kSky's, the second over 2008's
+    const { maps } = constellations([this.kSky, LAST]), [m0, m1] = maps, [L1, L2] = this.L;
+    const sky = (m: SkyMap, dy: number, dx = 0): Place => ({ pos: skyAt(m, [m.o[0] + dx / m.k, m.o[1] + dy / m.k]), right: CA.u, up: CA.v });
+    const o = { voice: v, size: SKY_EM, enter: 'fade' as const, settle: 0.18, spread: 0.2, tone: TONE.loob };
+    const row = 0.55 * SKY_EM, simX = -(0.5 * (this.S.w / this.S.r) * 0.15 * m1.k + 3 + 0.5 * wem('simula') * SKY_EM);
+    this.skyTrack = new LyricTrack(kit.words)
+      .add(L1, { ...o, at: sky(m0, 29 + row), skip: ['lang', 'talaga', 'ako'] })
+      .add(L1, { ...o, at: sky(m0, 29 - row), skip: ['sadyang', 'mahiyain'] })
+      .add(L2, { ...o, at: sky(m1, 30), skip: ['simula', 'noon'] })
+      // beside NOON, on its line under the child's feet
+      .add(L2, { ...o, at: sky(m1, (-0.5 - m1.o[1]) * m1.k, simX), skip: ['ganito', 'na', 'yata', 'ko', 'noon'] });
+  }
+
+  /** v1: "simula" peels off its print on the rush, runs ahead of the lens and comes to rest over NOON */
+  private simula1(t: number, at: Place): Place {
+    const B = this.B, tN = this.w.start;
+    const z = -GAP * this.q1(t) - 1.2 * (1 - prog(t, B[12], tN, ease.inOutSine));
+    const ahead: Place = { pos: [0, EYE + 0.42, z - 3.4], size: CAP.size };
+    const over: Place = { pos: add(this.nPos, [0, 0.72, 0]), size: 0.3 };
+    const off = mixPlace({ ...at, size: CAP.size }, ahead, prog(t, B[12] - 0.05, B[12] + 0.4, ease.inOutSine));
+    return mixPlace(off, over, prog(t, tN - 0.75, tN - 0.1, ease.inOutSine));
   }
 
   render(f: Frame, out: RT): Post {
@@ -282,10 +394,9 @@ export default class Noon extends Scene {
 
   private v1(f: Frame, out: RT): Post {
     const t = f.t, next: number = this.params.next, B = this.B, w = this.w;
-    const { P, sk } = corridor();
+    const { P } = corridor();
     const tN = w.start, tP = tN + 0.62;
-    const last = P[LAST], head = onPrint(last, sk[LAST].head);
-    const Sp: V3 = [0, EYE, zOf(LAST - 1) - 2.1], E: V3 = add(head, [0, 0, 0.36]);
+    const last = P[LAST], { Sp, E, head } = throughO();
 
     // wide in the rush, settling for the last print
     const rw = smoothstep(B[12], B[12] + 0.35, t), settle = prog(t, tN - 0.4, tN + 0.3, ease.inOutSine);
@@ -314,20 +425,22 @@ export default class Noon extends Scene {
         : k <= 11 ? prog(t, B[k] + 0.1, B[k] + 0.45, ease.inOutSine)
           : prog(b.pos[2] - zOf(k), 14, 8);
     const W = this.corridorDraw(out, b, t, ring);
+    this.track.draw(t, b);
 
     // NOON before the last print, its first O on the line to the ringed child
     if (t >= tN - 0.05) {
-      const h = 0.75, kk = h / 320, zW = zOf(LAST) + 1.7, g1 = this.S.glyphs[1];
-      const Q = mix3(Sp, E, (zW - Sp[2]) / (E[2] - Sp[2]));
-      const pos = sub(sub(Q, [(g1.cx - 0.5 * this.S.w) * kk, 0, 0]), [0, (g1.cy - 0.36 * 320) * kk, 0]);
+      // dimmed as the camera reaches it, so the pass through the O is a dark wipe
+      const pos = this.nPos, alpha = 1 - 0.55 * prog(t, tP + 0.15, tP + 0.55);
+      let aSum = 0;
       W.word(this.S, {
-        // dimmed as the camera reaches it, so the pass through the O is a dark wipe
-        pos, right: [1, 0, 0], up: [0, 1, 0], height: h, col: mul(PAPER, 1.1), alpha: 1 - 0.55 * prog(t, tP + 0.15, tP + 0.55),
+        pos, right: [1, 0, 0], up: [0, 1, 0], height: NOON_H, col: mul(PAPER, 1.1), alpha,
         each: (i) => {
-          const q = Lyrics.charProgress(w, i, t);
-          return { alpha: smoothstep(0, 0.25, q), scale: lerp(1.5, 1, ease.outExpo(q)) };
+          const q = Lyrics.charProgress(this.wq, i, t), a = smoothstep(0, 0.25, q);
+          aSum += a;
+          return { alpha: a, scale: lerp(1.5, 1, ease.outExpo(q)) };
         },
       });
+      LyricTrack.mark(this.L[1], w, b, pos, [1, 0, 0], NOON_H, this.S, (alpha * aSum) / this.S.glyphs.length);
     }
     W.draw(out, b, { fog: [18, 0.03], nearFade: 0.25 });
 
@@ -364,7 +477,9 @@ export default class Noon extends Scene {
       const c = cam([lerp(a.x, b1.x, wq) * 1.3, eye, -GAP * q], mix3(a.tgt, b1.tgt, wq), 50, roll);
       const b = basis(handheld(c, t, 0.005, 0.8, 12));
       const ring = (k: number) => (k < B.length ? prog(t, B[k] + 0.1, B[k] + 0.45, ease.inOutSine) : 0);
-      this.corridorDraw(out, b, t, ring).draw(out, b, { fog: [18, 0.03] });
+      this.corridorDraw(out, b, t, ring);
+      this.track.draw(t, b);
+      W.draw(out, b, { fog: [18, 0.03] });
       post = { bloom: 0.7, grain: 0.045, vignette: 0.42 };
     } else {
       // LOOB: the same sketch in fireflies over the sea
@@ -408,14 +523,18 @@ export default class Noon extends Scene {
       if (!last) {
         W.word(this.years[k], { pos: cap, right: CA.u, up: CA.v, height: 0.07 * m.k, col: mul(GOLD, 1.2), alpha: smoothstep(0.2, 0.35, uK) });
       } else if (t >= w.start - 0.05) {
+        let aSum = 0;
         W.word(this.S, {
           pos: cap, right: CA.u, up: CA.v, height: 0.15 * m.k, col: mul(GOLD, 1.6),
           each: (i) => {
-            const q = Lyrics.charProgress(w, i, t);
-            return { alpha: smoothstep(0, 0.3, q), scale: lerp(0.6, 1, ease.outCubic(q)) };
+            const q = Lyrics.charProgress(this.wq, i, t), a = smoothstep(0, 0.3, q);
+            aSum += a;
+            return { alpha: a, scale: lerp(0.6, 1, ease.outCubic(q)) };
           },
         });
+        LyricTrack.mark(this.L[1], w, b, cap, CA.u, 0.15 * m.k, this.S, aSum / this.S.glyphs.length, CA.v);
       }
+      this.skyTrack.draw(t, b);
       W.draw(out, b, { depth });
       if (last) fillK = Math.min(1, diveOut(t, next - 0.06, 0.44));
       post = { bloom: 0.95, grain: 0.04, vignette: 0.32 };

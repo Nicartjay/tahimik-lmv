@@ -1,7 +1,8 @@
 // Kinetic hero words: glyphs rasterised once (Canvas2D, at RASTER px) into a shared
 // mip-mapped atlas and drawn as textured quads in 3D, one per glyph, so a word can fly
 // past, orbit, tumble apart or be carved into the world. Kerning and tracking come from
-// fonts.ts `layout`, so a word at rest reads exactly as the typeface sets it.
+// fonts.ts `layout`, so a word at rest reads exactly as the typeface sets it. Hero words
+// rasterise at 320 px; lyric lines, which are never as big on screen, at less.
 
 import { applyFont, layout, type FontSpec, fontCss } from '../fonts';
 import { gl, type RT } from '../gl';
@@ -47,6 +48,11 @@ class Atlas {
     if (an) gl.texParameterf(gl.TEXTURE_2D, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
   }
 
+  /** how much of the atlas is used, 0..1 */
+  fill() {
+    return (this.y + this.shelf) / SIZE;
+  }
+
   /** the glyph for one character in a raster-size font (null for blanks) */
   glyph(ch: string, f: FontSpec): Glyph | null {
     const key = fontCss(f) + '|' + (f.stretch ?? '') + '|' + ch;
@@ -60,7 +66,9 @@ class Atlas {
       this.glyphs.set(key, null);
       return null;
     }
-    const w = l + r + 2 * PAD, h = a + d + 2 * PAD;
+    // (the mip chain's margin, in proportion to the raster size)
+    const pad = Math.max(8, Math.round((PAD * f.size) / RASTER));
+    const w = l + r + 2 * pad, h = a + d + 2 * pad;
     if (this.x + w > SIZE) {
       this.x = 0;
       this.y += this.shelf;
@@ -69,10 +77,10 @@ class Atlas {
     if (this.y + h > SIZE) throw new Error('word atlas full');
     c.fillStyle = '#fff';
     c.textBaseline = 'alphabetic';
-    c.fillText(ch, this.x + PAD + l, this.y + PAD + a);
+    c.fillText(ch, this.x + pad + l, this.y + pad + a);
     const g: Glyph = {
       uv: [this.x / SIZE, (this.y + h) / SIZE, (this.x + w) / SIZE, this.y / SIZE],
-      w, h, left: -l - PAD, top: a + PAD,
+      w, h, left: -l - pad, top: a + pad,
     };
     this.x += w;
     this.shelf = Math.max(this.shelf, h);
@@ -96,12 +104,17 @@ class Atlas {
 
 let atlas: Atlas | null = null;
 
+/** fraction of the shared glyph atlas in use */
+export const atlasFill = () => atlas?.fill() ?? 0;
+
 export interface WordShape {
   text: string;
   /** glyph centres relative to the pen origin on the baseline, raster px, y up */
   glyphs: { g: Glyph; i: number; cx: number; cy: number }[];
   /** advance width, raster px */
   w: number;
+  /** the raster size: raster px per em */
+  r: number;
 }
 
 /** per-glyph motion, returned from WordOpts.each */
@@ -177,16 +190,16 @@ export class Words {
   private pass = new GeoPass(VERT, FRAG, ATTRS);
   private atlas = (atlas ??= new Atlas());
 
-  /** lay out `text` in font `f` (its size is ignored: glyphs are rasterised at RASTER px) */
-  shape(text: string, f: FontSpec): WordShape {
-    const rf = { ...f, size: RASTER, tracking: ((f.tracking ?? 0) * RASTER) / f.size };
+  /** lay out `text` in font `f` (its size is ignored: glyphs are rasterised at `raster` px) */
+  shape(text: string, f: FontSpec, raster = RASTER): WordShape {
+    const rf = { ...f, size: raster, tracking: ((f.tracking ?? 0) * raster) / f.size };
     const L = layout(text, rf);
     const glyphs: WordShape['glyphs'] = [];
     for (let i = 0; i < text.length; i++) {
       const g = this.atlas.glyph(text[i], rf);
       if (g) glyphs.push({ g, i, cx: L.xs[i] + g.left + g.w / 2, cy: g.top - g.h / 2 });
     }
-    return { text, glyphs, w: L.w };
+    return { text, glyphs, w: L.w, r: raster };
   }
 
   clear() {
@@ -213,8 +226,8 @@ export class Words {
   word(s: WordShape, o: WordOpts) {
     const R = norm(o.right ?? [1, 0, 0]), U = norm(o.up ?? [0, 1, 0]);
     const N = cross(R, U);
-    const k = o.height / RASTER;
-    const x0 = (o.align ?? 0.5) * s.w, y0 = 0.36 * RASTER;
+    const k = o.height / s.r;
+    const x0 = (o.align ?? 0.5) * s.w, y0 = 0.36 * s.r;
     for (const { g, i, cx, cy } of s.glyphs) {
       const x = o.each?.(i, s.w ? cx / s.w : 0.5) || {};
       let r = R, u = U;

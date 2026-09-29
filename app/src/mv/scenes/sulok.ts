@@ -11,18 +11,21 @@
 //     recede into fireflies; the first orbit is round them, and they stand up in it.
 
 import type { RT } from '../../engine/gl';
-import type { Word } from '../../engine/lyrics';
+import { measure } from '../../engine/fonts';
+import type { Line, Word } from '../../engine/lyrics';
 import { Lyrics } from '../../engine/lyrics';
 import { lin, type RGB } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { ease, lerp, prog, smoothstep, TAU, window01 } from '../../engine/util';
 import { basis, handheld, orbit, shots, type Basis, type Cam } from '../../engine/3d/camera';
 import { LineBatch } from '../../engine/3d/lines';
-import { add, cross, dot, madd, mix3, mul, norm, sub, type V3 } from '../../engine/3d/math';
+import { add, cross, dot, len, madd, mix3, mul, norm, sub, type V3 } from '../../engine/3d/math';
 import { GlowPoints } from '../../engine/3d/points';
-import type { WordShape } from '../../engine/3d/words';
+import type { WordOpts, WordShape } from '../../engine/3d/words';
 import { bars, impact, mergePost } from './_fx';
 import { INK, lerpPose, POSE, walk, type Pose } from './_labas';
+import { carry, fromLocal, others, toLocal, worlds } from './_dami_lyric';
+import { lens, LyricTrack, TONE, VOICE, type Place } from './_lyric';
 import { EMBER, GOLD, lightOf } from './_self';
 import {
   at, bigCrowd, camAt, chorusGrid, drawCrowd, faceR, Flies, HERO, kit, Leak, local, OUTW, PAPER, QUIET, RIM, RIM_A, SELF_INK,
@@ -54,6 +57,49 @@ vec3 warp(vec3 p, vec4 d, float end) {
 const rec = (p: V3, s: [number, number]): V3 => [SEAT[0] + (p[0] - SEAT[0]) * s[0], p[1] * s[1], SEAT[2] + (p[2] - SEAT[2]) * s[0]];
 /** 1 → (sx, sy) geometrically as k goes 0 → 1 */
 const recede = (k: number, sx: number, sy: number): [number, number] => [sx ** k, sy ** k];
+/** how much the words written on the walls grow as the walls recede */
+const grow = (rs: [number, number]) => rs[0] ** 0.6 * rs[1] ** 0.4;
+
+/** a line's place when its words are placed one by one (wordAt) */
+const PER_WORD: Place = { pos: [0, 0, 0] };
+
+/** where the self walks in from, in v1 */
+const WALK0: V3 = [0.8, 0, 2.3];
+
+// ---------------------------------------------------------------- lyric places
+
+/**
+ * A place on a wall, in a corner's frame: side 1 the wall on the right seen from the front,
+ * −1 the one on the left; `along` m out of the corner and `y` up, reading left to right from
+ * the front, the walls receded by `rs`.
+ */
+function wallAt(side: number, along: number, y: number, rs: [number, number] = [1, 1], size?: number): Place {
+  const d: V3 = [-side * H2, 0, H2], n: V3 = [side * H2, 0, H2];
+  const p = madd(madd([0, y, CZ], d, along), n, 0.03);
+  return { pos: [p[0] * rs[0], p[1] * rs[1], p[2] * rs[0]], right: side > 0 ? d : mul(d, -1), up: [0, 1, 0], size };
+}
+
+/** screen x, y (−1…1) of p under b, and its view depth */
+function screenOf(b: Basis, p: V3): V3 {
+  const v = sub(p, b.pos), z = dot(v, b.F);
+  return [(dot(v, b.R) * b.focal) / z / 960, (dot(v, b.U) * b.focal) / z / 540, z];
+}
+
+/** the spot on a wall of the corner the lens `b` sees at screen x, y (−1…1): along, up, and its view depth */
+function onWall(b: Basis, side: number, x: number, y: number, rs: [number, number] = [1, 1]) {
+  const ray = add(add(mul(b.F, b.focal), mul(b.R, x * 960)), mul(b.U, y * 540));
+  const { pos: o, right: r } = toLocal(LF, { pos: b.pos, right: ray });
+  const d: V3 = [-side * H2, 0, H2], n: V3 = [side * H2, 0, H2];
+  const p0: V3 = [n[0] * 0.03 * rs[0], 0, (CZ + n[2] * 0.03) * rs[0]];
+  const s = dot(sub(p0, o), n) / dot(r!, n), hit = madd(o, r!, s);
+  return { along: dot(sub(hit, p0), d) / rs[0], y: hit[1] / rs[1], depth: s * b.focal };
+}
+
+/** the spot on a wall under b1 where a word at p, em `size`, under b0 looks the same: held on screen through a cut */
+function rewall(p: V3, size: number, b0: Basis, b1: Basis, side: number, rs: [number, number] = [1, 1]) {
+  const [x, y, z] = screenOf(b0, p), h = onWall(b1, side, x, y, rs);
+  return { along: h.along, y: h.y, size: (size * h.depth * b0.focal) / (z * b1.focal) };
+}
 
 let walls: LineBatch | null = null;
 function cornerWalls(): LineBatch {
@@ -119,6 +165,10 @@ export default class Sulok extends Scene {
   maxSamples = 72;
   private w!: Record<'huminga' | 'sulok', Word>;
   private S!: Record<'huminga' | 'sulok', WordShape>;
+  private l!: { l1: Line; l2: Line };
+  private track!: LyricTrack;
+  private cuts: number[] = [];
+  private bb: number[] = [];
   private leak?: Leak;
   private flies?: Flies;
 
@@ -132,21 +182,28 @@ export default class Sulok extends Scene {
     bigCrowd();
     cornerWalls();
     const L = this.lyrics, c = this.params.cut;
-    this.w = {
-      huminga: Lyrics.word(L.find('Gusto ko lang huminga', c - 1), 'huminga'),
-      sulok: Lyrics.word(L.find('Sa sulok na ako', c - 1), 'sulok'),
-    };
+    const l1 = L.find('Gusto ko lang huminga', c - 1), l2 = L.find('Sa sulok na ako', c - 1);
+    this.l = { l1, l2 };
+    this.w = { huminga: Lyrics.word(l1, 'huminga'), sulok: Lyrics.word(l2, 'sulok') };
     this.S = { huminga: kit.words.shape('huminga', QUIET), sulok: kit.words.shape('SULOK', HERO) };
     kit.sky; kit.self; kit.spot;
     if (this.v === 2) {
       kit.loob;
       islandHouse();
       this.flies = new Flies(2600, 50, 29);
+      this.cuts = [c, ...bars(this.audio, c + 0.5, this.params.next - 0.5)].map(toFrame);
     }
     if (this.v === 3) {
       this.leak = new Leak(900, 11, 0.55);
       this.flies = new Flies(2600, 50, 23);
+      this.bb = bars(this.audio, c + 0.5, this.params.next).map(toFrame);
     }
+    this.track = new LyricTrack(kit.words);
+    // v3: EKSENA, still being sung over the cut, where the clearing left it
+    if (this.v === 3) this.track.tail(L, c, { voice: VOICE.loud, size: 1, tone: TONE.lit, at: (_t, b) => lens(b, -0.11, 0.2, 3, 0.17) });
+    if (this.v === 1) this.stage1();
+    else if (this.v === 2) this.stage2();
+    else this.stage3();
   }
 
   render(f: Frame, out: RT): Post {
@@ -177,15 +234,17 @@ export default class Sulok extends Scene {
    * A hero word folded into the corner: its left half on the left wall reading in, the
    * right half on the right wall reading out, carried by the walls as they recede.
    */
-  private fold(s: WordShape, wd: Word, t: number, o: {
+  private fold(s: WordShape, wd: Word, t: number, b: Basis, o: {
     y: number; h: number; col: RGB; alpha?: number; rs: [number, number]; gap?: number;
     mode: 'rise' | 'slide' | 'glow';
   }) {
     const width = (s.w * o.h) / 320, c0 = at(LF, [0, o.y, CZ]);
     const R = mul(LF.X, -1), U: V3 = [0, 1, 0], N = cross(R, U);
+    let a = 0, m = 0;
     kit.words.word(s, {
       pos: c0, right: R, up: U, height: o.h, col: o.col, alpha: o.alpha ?? 1,
       each: (i, u) => {
+        m++;
         if (t < (wd.c[i] ?? wd.start) - 0.02) return { alpha: 0 };
         const p = Lyrics.charProgress(wd, i, t), e = ease.outExpo(p);
         const x = (u - 0.5) * width, side = x >= 0 ? 1 : -1;
@@ -196,35 +255,80 @@ export default class Sulok extends Scene {
         if (o.mode === 'slide') along += (1 - e) * 3.5;
         if (o.mode === 'glow') scale = lerp(1.25, 1, e);
         const q = rec(add(madd(madd(c0, d, along), n, 0.03), [0, lift, 0]), o.rs);
-        const r = side > 0 ? d : mul(d, -1);
-        return { off: sub(q, madd(c0, R, x)), tilt: Math.atan2(dot(r, N), dot(r, R)), scale, alpha: smoothstep(0, o.mode === 'slide' ? 0.12 : 0.3, p) };
+        const r = side > 0 ? d : mul(d, -1), al = smoothstep(0, o.mode === 'slide' ? 0.12 : 0.3, p);
+        a += al;
+        return { off: sub(q, madd(c0, R, x)), tilt: Math.atan2(dot(r, N), dot(r, R)), scale, alpha: al };
       },
     });
+    // for the lyric audit: seen as the chord across the corner
+    LyricTrack.mark(this.l.l2, wd, b, rec(c0, o.rs), R, o.h, s, ((o.alpha ?? 1) * a) / Math.max(1, m));
+  }
+
+  /** "huminga", the scene's own (the track skips it), recorded for the lyric audit */
+  private hum(b: Basis, o: WordOpts) {
+    let a = 0, n = 0;
+    kit.words.word(this.S.huminga, {
+      ...o,
+      each: (i, u) => {
+        const g = o.each?.(i, u) || {};
+        a += g.alpha ?? 1;
+        n++;
+        return g;
+      },
+    });
+    LyricTrack.mark(this.l.l1, this.w.huminga, b, o.pos, o.right ?? [1, 0, 0], o.height, this.S.huminga, ((o.alpha ?? 1) * a) / Math.max(1, n));
+  }
+
+  /** word centres across a run of a line's words (em from the run's centre, in reading order), and its width */
+  private run(line: Line, ws: string[]) {
+    const q = VOICE.quiet, sp = measure(' ', q.font) / q.font.size;
+    const n = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
+    const ks = ws.map((s) => line.words.findIndex((w) => n(w.w) === n(s)));
+    const wem = ks.map((k) => kit.words.shape(line.words[k].w, q.font, q.raster).w / q.raster);
+    const w = wem.reduce((s, x) => s + x, 0) + sp * (ks.length - 1), off: number[] = [];
+    let x = -w / 2;
+    ks.forEach((k, j) => {
+      off[k] = x + wem[j] / 2;
+      x += wem[j] + sp;
+    });
+    return { off, w };
+  }
+
+  /**
+   * A run of a line's words written along a wall: centred `ac` m out of the corner, `y` up, em
+   * `size`; riding the walls as they recede (growing, and kept close together), in the corner
+   * or (L) in its LOOB twin. Grown at least `G` times as the lens backs off, out along the wall
+   * and up from where it stands, so it stays legible.
+   */
+  private wallRow(line: Line, ws: string[], side: number, ac: number, y: number, size: number,
+    rs: (t: number) => [number, number] = () => [1, 1], L: (t: number) => Local = () => LF, G: (t: number) => number = () => 1) {
+    const { off, w } = this.run(line, ws);
+    return (k: number, t: number): Place => {
+      const r = rs(t), s0 = size * grow(r), g = Math.max(1, G(t) / grow(r)), s = s0 * g;
+      const along = ac + (w * s0 * (g - 1)) / (2 * r[0]) + (side * off[k] * s) / r[0];
+      return fromLocal(L(t), wallAt(side, along, y + (0.36 * s0 * (g - 1)) / r[1], r, s));
+    };
   }
 
   // ---------------------------------------------------------------- v1
 
-  private v1(f: Frame, out: RT): Post {
-    const t = f.t, cut: number = this.params.cut, next: number = this.params.next, w = this.w;
-    const tH = w.huminga.start, tC = toFrame(w.sulok.start);
+  private selfL1(t: number): V3 {
+    return mix3(WALK0, [0, 0, 0], prog(t, this.params.cut, 53.25, ease.outSine));
+  }
 
-    // off the rim into the corner, turn round, sit, hug the knees and breathe
-    const P0: V3 = [0.8, 0, 2.3];
-    const selfL = (t: number): V3 => mix3(P0, [0, 0, 0], prog(t, cut, 53.25, ease.outSine));
-    const pos = at(LF, selfL(t));
-    const dir = dirOf(LF, [-P0[0], 0, -P0[2]]), yawWalk = Math.atan2(dir[0], dir[2]);
-    const dy = Math.atan2(Math.sin(LF.yaw - yawWalk), Math.cos(LF.yaw - yawWalk));
-    const yaw = yawWalk + dy * prog(t, 52.95, 53.6, ease.inOutSine);
-    const breath = (t: number) => Math.sin((TAU * (t - tH)) / 2.6) * smoothstep(tH - 0.2, tH + 0.6, t);
-    const br = breath(t);
-    const pose = lerpPose(walk((t - cut) * 1.9, 1 - prog(t, 52.9, 53.3)), this.hug(br), prog(t, 53.3, 54.2, ease.inOutCubic));
+  private breath1(t: number) {
+    const tH = this.w.huminga.start;
+    return Math.sin((TAU * (t - tH)) / 2.6) * smoothstep(tH - 0.2, tH + 0.6, t);
+  }
 
+  private cam1(t: number): Basis {
+    const cut: number = this.params.cut, next: number = this.params.next, tC = toFrame(this.w.sulok.start);
     const camFn = shots(t, [
       // out of the crowd behind them, round onto them in the corner, and a push-in that breathes
       { t: cut, cam: (t) => {
         const k = prog(t, cut - 0.2, 53.9, ease.inOutSine), p = prog(t, 53.6, tC, ease.outSine);
-        const z = lerp(7.6, 4.4, k) - 1.9 * p + 0.16 * breath(t - 0.25);
-        return camAt(LF, [lerp(1.7, 1.9, k) - 0.65 * p, lerp(2.3, 1.0, k) - 0.2 * p, z], mix3(add(selfL(t), [0, 1.0, 0]), [0, 0.5, 0], k), lerp(38, 34, p));
+        const z = lerp(7.6, 4.4, k) - 1.9 * p + 0.16 * this.breath1(t - 0.25);
+        return camAt(LF, [lerp(1.7, 1.9, k) - 0.65 * p, lerp(2.3, 1.0, k) - 0.2 * p, z], mix3(add(this.selfL1(t), [0, 1.0, 0]), [0, 0.5, 0], k), lerp(38, 34, p));
       } },
       // "sulok": the corner, then back and up as the walls recede
       { t: tC, cam: (t) => {
@@ -232,7 +336,46 @@ export default class Sulok extends Scene {
         return camAt(LF, [lerp(0, 3, k), lerp(1.7, 22, k ** 1.3), lerp(8.2, 34, k)], [0, lerp(1.9, -1, k), lerp(-1, -4, k)], lerp(44, 42, k));
       } },
     ]);
-    const b = basis(handheld(camFn, t, t < tC ? 0.004 : 0.003, 0.6, 14));
+    return basis(handheld(camFn, t, t < tC ? 0.004 : 0.003, 0.6, 14));
+  }
+
+  /** v1 lines, quiet on the walls: L10 either side of them as they come in, L11 run out of the corner under SULOK */
+  private stage1() {
+    const { l1, l2 } = this.l, next: number = this.params.next, tC = toFrame(this.w.sulok.start), T = this.track;
+    const voice = VOICE.quiet, tone = TONE.labas;
+    const rs = (t: number) => recede(prog(t, 57.6, next + 0.3, ease.inOutSine), 12, 2.2);
+    // "Gusto ko lang" along the right wall as they walk into the corner
+    const gkl = ['Gusto', 'ko', 'lang'];
+    T.add(l1, { voice, tone, size: 0.3, skip: others(l1, ...gkl), at: PER_WORD, wordAt: this.wallRow(l1, gkl, 1, 2.4, 1.6, 0.3), out: 53.62 });
+    // "nang tahimik" low on the left wall by their head, under "huminga"
+    const nt = ['nang', 'tahimik'];
+    T.add(l1, { voice, tone, size: 0.22, skip: others(l1, ...nt), at: PER_WORD, wordAt: this.wallRow(l1, nt, -1, 1.0, 0.95, 0.22), out: tC - 0.14, exitDur: 0.12 });
+    // "Sa" under it, held where it was through the cut, on the corner's left wall
+    const b0 = this.cam1(56.75), h0 = onWall(b0, -1, -0.56, 0.24), s0 = (110 * h0.depth) / b0.focal;
+    const P0 = fromLocal(LF, wallAt(-1, h0.along, h0.y, [1, 1], s0));
+    const h1 = rewall(P0.pos, s0, this.cam1(tC - 1 / 60), this.cam1(tC), -1);
+    T.add(l2, {
+      voice, tone, size: s0, skip: others(l2, 'Sa'), out: 57.3, at: PER_WORD,
+      wordAt: (_k, t) => (t < tC ? P0 : fromLocal(LF, wallAt(-1, h1.along, h1.y, rs(t), h1.size * grow(rs(t))))),
+    });
+    // the rest under SULOK, out of the corner along both walls as they recede
+    const na = ['na', 'ako', 'lang'], ak = ['ang', 'kilala'], s = 0.6;
+    T.add(l2, { voice, tone, size: s, skip: others(l2, ...na), at: PER_WORD, wordAt: this.wallRow(l2, na, -1, 0.35 + (this.run(l2, na).w * s) / 2, 1.45, s, rs), out: next + 1 });
+    T.add(l2, { voice, tone, size: s, skip: others(l2, ...ak), at: PER_WORD, wordAt: this.wallRow(l2, ak, 1, 0.35 + (this.run(l2, ak).w * s) / 2, 1.45, s, rs), out: next + 1 });
+  }
+
+  private v1(f: Frame, out: RT): Post {
+    const t = f.t, cut: number = this.params.cut, next: number = this.params.next, w = this.w;
+    const tH = w.huminga.start, tC = toFrame(w.sulok.start);
+
+    // off the rim into the corner, turn round, sit, hug the knees and breathe
+    const pos = at(LF, this.selfL1(t));
+    const dir = dirOf(LF, [-WALK0[0], 0, -WALK0[2]]), yawWalk = Math.atan2(dir[0], dir[2]);
+    const dy = Math.atan2(Math.sin(LF.yaw - yawWalk), Math.cos(LF.yaw - yawWalk));
+    const yaw = yawWalk + dy * prog(t, 52.95, 53.6, ease.inOutSine);
+    const br = this.breath1(t);
+    const pose = lerpPose(walk((t - cut) * 1.9, 1 - prog(t, 52.9, 53.3)), this.hug(br), prog(t, 53.3, 54.2, ease.inOutCubic));
+    const b = this.cam1(t);
 
     const rk = prog(t, 57.6, next + 0.3, ease.inOutSine), rs = recede(rk, 12, 2.2);
     this.labas(out, b, f, {
@@ -243,10 +386,11 @@ export default class Sulok extends Scene {
     kit.self.draw(out, b, t, { pos, yaw, pose, col: SELF_INK, w: 1.4, light: lightOf(this.liwanag(t)) }, { fog: [30, 0.006] });
 
     const W = kit.words.clear();
+    this.track.draw(t, b);
     // "huminga", breathed out over their head and drifting off
     if (t >= tH - 0.05 && t < tC) {
       const p = at(LF, [0.1, 1.08 + 0.05 * Math.max(0, t - w.huminga.end), 0.2]);
-      W.word(this.S.huminga, {
+      this.hum(b, {
         pos: p, right: faceR(b, p), up: [0, 1, 0], height: 0.26 * (1 + 0.05 * br), col: mul(PAPER, 0.8), alpha: 1 - prog(t, 56.1, 56.85),
         each: (i) => {
           const q = Lyrics.charProgress(w.huminga, i, t);
@@ -254,7 +398,7 @@ export default class Sulok extends Scene {
         },
       });
     }
-    if (t >= tC) this.fold(this.S.sulok, w.sulok, t, { y: 2.55, h: 1.25, col: mul(PAPER, 0.95), rs, mode: 'rise', alpha: 1 - prog(t, 59.6, 61.2) });
+    if (t >= tC) this.fold(this.S.sulok, w.sulok, t, b, { y: 2.55, h: 1.25, col: mul(PAPER, 0.95), rs, mode: 'rise', alpha: 1 - prog(t, 59.6, 61.2) });
     W.draw(out, b);
 
     return { bloom: 0.75, grain: 0.045, vignette: lerp(0.4, 0.46, rk) };
@@ -262,14 +406,10 @@ export default class Sulok extends Scene {
 
   // ---------------------------------------------------------------- v2
 
-  private v2(f: Frame, out: RT): Post {
-    const t = f.t, cut: number = this.params.cut, next: number = this.params.next, w = this.w;
-    const cuts = [cut, ...bars(this.audio, cut + 0.5, next - 0.5)].map(toFrame);
-    const seg = smashIdx(t, cuts), inner = seg % 2 === 1;
-    const light = lightOf(this.liwanag(t));
-    const L = inner ? LL : LF;
-
-    // one move per pair of shots, the same relative to the corner and to the house
+  /** one move per pair of shots, the same relative to the corner and to the house (`inner`) */
+  private cam2(t: number, inner = smashIdx(t, this.cuts) % 2 === 1): Basis {
+    const cut: number = this.params.cut, next: number = this.params.next, cuts = this.cuts;
+    const seg = smashIdx(t, cuts), L = inner ? LL : LF;
     let c: Cam;
     if (seg <= 1) {
       // over their head from right in the corner / from just inside the door, looking out;
@@ -282,13 +422,51 @@ export default class Sulok extends Scene {
     } else {
       // back and up, off the island / out of the corner
       const k = prog(t, cuts[3], next + 0.2, ease.inOutSine);
-      c = camAt(L, [lerp(0.35, 3.5, k), lerp(1.65, 8, k ** 1.3), lerp(6.2, 30, k)], [0, lerp(1.35, 0.2, k), -1.5], lerp(42, 40, k));
+      c = camAt(L, this.back2(t), [0, lerp(1.35, 0.2, k), -1.5], lerp(42, 40, k));
     }
-    const b = basis(handheld(c, t, 0.005, 0.8, 21));
+    return basis(handheld(c, t, 0.005, 0.8, 21));
+  }
+
+  /** where the v2 lens backs off to, off the island / out of the corner (local) */
+  private back2(t: number): V3 {
+    const k = prog(t, this.cuts[3], this.params.next + 0.2, ease.inOutSine);
+    return [lerp(0.35, 3.5, k), lerp(1.65, 8, k ** 1.3), lerp(6.2, 30, k)];
+  }
+
+  /** v2 lines, the same on both sides of every smash cut: L26 hung before the lens, L27 on the walls */
+  private stage2() {
+    const { l1, l2 } = this.l, next: number = this.params.next, cuts = this.cuts, T = this.track, voice = VOICE.quiet;
+    const inner = (t: number) => smashIdx(t, cuts) % 2 === 1;
+    const outer = (t: number) => this.cam2(t, false);
+    // hung in the corner where the lens saw it, and carried into LOOB at the same place on screen
+    const held = (P: Place) => (t: number, b: Basis) => (inner(t) ? carry(P, outer(t), b) : P);
+    const gkl = ['Gusto', 'ko', 'lang'], P1 = lens(outer(116.2), 0, 0.3, 3.4, 0.075);
+    T.add(l1, { voice, size: 1, skip: others(l1, ...gkl), at: held(P1), out: 117.6, each: worlds(l1, inner) });
+    // "nang tahimik" held on screen through the cut back out, then left in the corner
+    const nt = ['nang', 'tahimik'], tc = cuts[2], P2 = lens(outer(118.8), 0.36, -0.12, 3.4, 0.075);
+    const Q2 = carry(P2, outer(tc - 1 / 60), outer(tc));
+    T.add(l1, { voice, size: 1, skip: others(l1, ...nt), at: (t, b) => (t >= tc ? Q2 : held(P2)(t, b)), out: 120.42, each: worlds(l1, inner) });
+    // L27 on the walls of the corner, and just the same before the house
+    const rs = (t: number): [number, number] => (inner(t) ? [1, 1] : recede(prog(t, cuts[4] - 0.3, next + 0.3, ease.inSine), 3, 1.3));
+    const L = (t: number) => (inner(t) ? LL : LF);
+    // grown as the lens backs off (screen size falling only as its distance^.3)
+    const far = (t: number) => len(sub(this.back2(t), [0, 1.3, CZ])), G = (t: number) => Math.max(1, far(t) / far(cuts[3])) ** 0.7;
+    T.add(l2, { voice, size: 0.55, skip: others(l2, 'Sa'), at: PER_WORD, wordAt: this.wallRow(l2, ['Sa'], -1, 2.6, 2.45, 0.55, rs, L), out: cuts[3] - 0.12, exitDur: 0.1, each: worlds(l2, inner) });
+    const na = ['na', 'ako', 'lang'], ak = ['ang', 'kilala'], sN = 0.42, sK = 0.9;
+    T.add(l2, { voice, size: sN, skip: others(l2, ...na), at: PER_WORD, wordAt: this.wallRow(l2, na, -1, 1.2, 1.45, sN, rs, L, G), out: next + 1, each: worlds(l2, inner) });
+    T.add(l2, { voice, size: sK, skip: others(l2, ...ak), at: PER_WORD, wordAt: this.wallRow(l2, ak, 1, 0.35 + (this.run(l2, ak).w * sK) / 2, 1.3, sK, rs, L, G), out: next + 1, each: worlds(l2, inner) });
+  }
+
+  private v2(f: Frame, out: RT): Post {
+    const t = f.t, cut: number = this.params.cut, next: number = this.params.next, w = this.w, cuts = this.cuts;
+    const seg = smashIdx(t, cuts), inner = seg % 2 === 1;
+    const light = lightOf(this.liwanag(t));
+    const b = this.cam2(t, inner);
     const br = Math.sin((TAU * (t - cut)) / 2.6);
     const pose = this.hug(br);
 
     const W = kit.words.clear();
+    this.track.draw(t, b);
     let depth: RT | undefined;
     if (!inner) {
       const rs = recede(prog(t, cuts[4] - 0.3, next + 0.3, ease.inSine), 3, 1.3);
@@ -298,7 +476,7 @@ export default class Sulok extends Scene {
         fog: seg === 0 ? [6, 0.075] : undefined,
       });
       kit.self.draw(out, b, t, { pos: SEAT, yaw: LF.yaw, pose, col: SELF_INK, w: 1.4, light }, { fog: [30, 0.006] });
-      if (seg === 2) this.fold(this.S.sulok, w.sulok, t, { y: 2.45, h: 1.35, col: PAPER, rs, mode: 'slide' });
+      if (seg === 2) this.fold(this.S.sulok, w.sulok, t, b, { y: 2.45, h: 1.35, col: PAPER, rs, mode: 'slide' });
     } else {
       depth = this.rt(0);
       const { house, windows } = islandHouse();
@@ -313,7 +491,7 @@ export default class Sulok extends Scene {
       if (seg === 1 && t >= w.huminga.start - 0.05) {
         // "huminga" out over the sea, in gold
         const p = at(LL, [-0.3, 2.0 + 0.06 * (t - w.huminga.start), 5]);
-        W.word(this.S.huminga, {
+        this.hum(b, {
           pos: p, right: faceR(b, p), up: [0, 1, 0], height: 0.9 * (1 + 0.04 * br), col: mul(GOLD, 1.5), alpha: 1 - prog(t, cuts[2] - 0.5, cuts[2]),
           each: (i) => ({ alpha: smoothstep(0, 0.5, Lyrics.charProgress(w.huminga, i, t)) }),
         });
@@ -329,20 +507,13 @@ export default class Sulok extends Scene {
 
   // ---------------------------------------------------------------- v3
 
-  private v3(f: Frame, out: RT): Post {
-    const t = f.t, cut: number = this.params.cut, next: number = this.params.next, w = this.w;
-    const tH = w.huminga.start, tS = w.sulok.start;
-    const bb = bars(this.audio, cut + 0.5, next).map(toFrame);
-    const liw = this.liwanag(t), light = lightOf(liw);
+  private orbitYaw(t: number) {
+    const bb = this.bb;
+    return LF.yaw + 0.25 + (t - bb[2]) * 0.5 + 0.06 * (t - bb[2]) ** 2;
+  }
 
-    // hugging the knees in the light, then (in the orbit) standing up in it
-    const breath = Math.sin((TAU * (t - tH)) / 2.6) * smoothstep(tH - 0.3, tH + 0.5, t);
-    const up = prog(t, bb[2] + 0.2, bb[2] + 1.9, ease.inOutCubic);
-    const pose = lerpPose(this.hug(breath), POSE.stand, up);
-    const self = { pos: SEAT, yaw: LF.yaw, pose };
-    const chest = kit.self.chest(self);
-
-    const orbitYaw = (t: number) => LF.yaw + 0.25 + (t - bb[2]) * 0.5 + 0.06 * (t - bb[2]) ** 2;
+  private cam3(t: number): Basis {
+    const cut: number = this.params.cut, next: number = this.params.next, bb = this.bb, tH = this.w.huminga.start;
     const camFn = shots(t, [
       { t: cut, cam: (t) => {
         const k = prog(t, cut, bb[1], ease.outSine), br = 0.12 * Math.sin((TAU * (t - tH - 0.25)) / 2.6) * smoothstep(tH, tH + 0.6, t);
@@ -354,10 +525,57 @@ export default class Sulok extends Scene {
       } },
       // the first orbit, round them
       { t: bb[2], snap: 0.45, kick: 0.05, cam: (t) =>
-        orbit(add(SEAT, [0, lerp(0.9, 1.3, prog(t, bb[2] + 0.2, bb[2] + 1.9, ease.inOutCubic)), 0]), orbitYaw(t), -0.1 + 0.03 * Math.sin(t * 0.7),
+        orbit(add(SEAT, [0, lerp(0.9, 1.3, prog(t, bb[2] + 0.2, bb[2] + 1.9, ease.inOutCubic)), 0]), this.orbitYaw(t), -0.1 + 0.03 * Math.sin(t * 0.7),
           lerp(4.4, 3.3, prog(t, bb[2], next, ease.outSine)), 40) },
     ]);
-    const b = basis(handheld(camFn, t, 0.004, 0.6, 16));
+    return basis(handheld(camFn, t, 0.004, 0.6, 16));
+  }
+
+  /** a place turning with the orbit round them: x across the view and z into it from the seat, y up, facing the lens */
+  private orbitAt(x: number, y: number, z: number, t: number, size: number): Place {
+    const a = this.orbitYaw(t), R: V3 = [Math.cos(a), 0, -Math.sin(a)], F: V3 = [-Math.sin(a), 0, -Math.cos(a)];
+    return { pos: add(madd(madd(SEAT, R, x), F, z), [0, y, 0]), right: R, up: [0, 1, 0], size };
+  }
+
+  /** v3 lines, warm on the walls round them; the end of L40 beside them in the orbit as they stand */
+  private stage3() {
+    const { l1, l2 } = this.l, bb = this.bb, next: number = this.params.next, T = this.track, voice = VOICE.quiet, tone = TONE.lit;
+    const rs = (t: number) => recede(prog(t, bb[1], 187.8, ease.inOutSine), 14, 2.2);
+    const eps = 1 / 60;
+    // L39 either side of them: "Gusto ko lang" up the left wall, "nang tahimik" low on the right, "huminga" between
+    const gkl = ['Gusto', 'ko', 'lang'];
+    T.add(l1, { voice, tone, size: 0.28, skip: others(l1, ...gkl), at: PER_WORD, wordAt: this.wallRow(l1, gkl, -1, 1.5, 1.45, 0.28), out: 181.05 });
+    // "nang tahimik" crosses the cut to the wide shot: held on screen, onto that shot's right wall,
+    // and left where it was put as the walls go (sliding in toward the corner, not out of frame)
+    const nt = ['nang', 'tahimik'], t1 = bb[1], sT = 0.19, rT = this.run(l1, nt), A = this.wallRow(l1, nt, 1, 1.5, 0.75, sT);
+    const h = rewall(fromLocal(LF, wallAt(1, 1.5, 0.75)).pos, sT, this.cam3(t1 - eps), this.cam3(t1), 1);
+    const B = (k: number, t: number) => {
+      const r = rs(t);
+      return fromLocal(LF, wallAt(1, (h.along + rT.off[k] * h.size) / r[0], h.y / r[1], r, h.size));
+    };
+    T.add(l1, { voice, tone, size: sT, skip: others(l1, ...nt), at: PER_WORD, wordAt: (k, t) => (t < t1 ? A(k, t) : B(k, t)), out: 184.25, exitDur: 0.2 });
+    // L40: "Sa" high on the left wall by SULOK, "na ako lang" under it, riding the walls out
+    T.add(l2, { voice, tone, size: 0.5, skip: others(l2, 'Sa'), at: PER_WORD, wordAt: this.wallRow(l2, ['Sa'], -1, 2.7, 2.5, 0.5, rs), out: bb[2] - 0.12, exitDur: 0.1 });
+    // in the orbit, as they stand: "na ako lang" at their left, "ang kilala" at their right, turning with it
+    const na = ['na', 'ako', 'lang'], ak = ['ang', 'kilala'], t2 = bb[2], sN = 0.42, sO = 0.26;
+    const rN = this.run(l2, na), rK = this.run(l2, ak), wall = this.wallRow(l2, na, -1, 1.2, 1.45, sN, rs);
+    const nx = -(0.5 + (rN.w * sO) / 2), kx = 0.5 + (rK.w * sO) / 2;
+    T.add(l2, { voice, tone, size: sN, skip: others(l2, ...na), at: PER_WORD, wordAt: (k, t) => (t < t2 ? wall(k, t) : this.orbitAt(nx + rN.off[k] * sO, 1.2, 0, t, sO)), out: next + 1 });
+    T.add(l2, { voice, tone, size: sO, skip: others(l2, ...ak), at: PER_WORD, wordAt: (k, t) => this.orbitAt(kx + rK.off[k] * sO, 1.2, 0, t, sO), out: next + 1 });
+  }
+
+  private v3(f: Frame, out: RT): Post {
+    const t = f.t, cut: number = this.params.cut, next: number = this.params.next, w = this.w, bb = this.bb;
+    const tH = w.huminga.start, tS = w.sulok.start;
+    const liw = this.liwanag(t), light = lightOf(liw);
+
+    // hugging the knees in the light, then (in the orbit) standing up in it
+    const breath = Math.sin((TAU * (t - tH)) / 2.6) * smoothstep(tH - 0.3, tH + 0.5, t);
+    const up = prog(t, bb[2] + 0.2, bb[2] + 1.9, ease.inOutCubic);
+    const pose = lerpPose(this.hug(breath), POSE.stand, up);
+    const self = { pos: SEAT, yaw: LF.yaw, pose };
+    const chest = kit.self.chest(self);
+    const b = this.cam3(t);
 
     const rk = prog(t, bb[1], 187.8, ease.inOutSine), rs = recede(rk, 14, 2.2);
     const sky = {
@@ -378,12 +596,13 @@ export default class Sulok extends Scene {
     this.leak!.draw(out, b, t, { src: chest, k: lerp(0.07, 0.3, prog(t, cut, next, ease.inSine)), life: 7, spread: lerp(2.5, 7, prog(t, cut + 1, next)), nearFade: 3 });
 
     const W = kit.words.clear();
+    this.track.draw(t, b);
     const gold = mul(GOLD, 1.6);
     // "huminga": each letter breathed out of the chest into its place over their head
     if (t >= tH - 0.05 && t < bb[1]) {
       const p = at(LF, [0, 1.02 + 0.06 * Math.max(0, t - w.huminga.end), 0.25]), R = faceR(b, p);
       const h = 0.32 * (1 + 0.05 * breath), width = (this.S.huminga.w * h) / 320;
-      W.word(this.S.huminga, {
+      this.hum(b, {
         pos: p, right: R, up: [0, 1, 0], height: h, col: gold, alpha: 1 - prog(t, bb[1] - 0.6, bb[1] - 0.05),
         each: (i, u) => {
           const q = Lyrics.charProgress(w.huminga, i, t), e = ease.outCubic(q);
@@ -392,7 +611,7 @@ export default class Sulok extends Scene {
       });
     }
     // SULOK gilded on the walls as they go
-    if (t >= tS - 0.05) this.fold(this.S.sulok, w.sulok, t, { y: 2.5, h: 1.2, col: mix3(PAPER, mul(GOLD, 1.4), 0.55), rs, mode: 'glow', alpha: 1 - prog(t, 187.0, 188.2) });
+    if (t >= tS - 0.05) this.fold(this.S.sulok, w.sulok, t, b, { y: 2.5, h: 1.2, col: mix3(PAPER, mul(GOLD, 1.4), 0.55), rs, mode: 'glow', alpha: 1 - prog(t, 187.0, 188.2) });
     W.draw(out, b);
 
     return { bloom: 0.85, grain: 0.04, vignette: 0.34 };

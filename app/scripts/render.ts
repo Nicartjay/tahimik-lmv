@@ -5,6 +5,7 @@
 //   node scripts/render.ts stills --t 12,45.5      PNG stills  → out/stills/
 //   node scripts/render.ts sheet --n 24 [--from --to | --t a,b,c]  contact sheet → out/sheet.png
 //   node scripts/render.ts bench [--samples 4] [--t a,b,c]   ms/frame per plate and per crossfade
+//   node scripts/render.ts lyrics --film mv [--from --to]  is every sung word seen as it is sung?
 //
 //   --film mv       the music video instead of the lyric video (outputs tahimik_mv*.mp4,
 //                   out/mv/stills, out/mv/sheet.png)
@@ -15,7 +16,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -49,8 +50,8 @@ const { positionals, values: V } = parseArgs({
   },
 });
 const mode = positionals[0] ?? 'video';
-if (!['video', 'stills', 'sheet', 'bench'].includes(mode)) {
-  console.error(`unknown mode "${mode}" (video | stills | sheet | bench)`);
+if (!['video', 'stills', 'sheet', 'bench', 'lyrics'].includes(mode)) {
+  console.error(`unknown mode "${mode}" (video | stills | sheet | bench | lyrics)`);
   process.exit(2);
 }
 const num = (s: string | undefined, d: number) => (s === undefined ? d : Number(s));
@@ -197,6 +198,44 @@ try {
     const avg = sum / rows.length;
     const at = samples === 'auto' ? `auto (mean ${(ns / rows.length).toFixed(1)})` : samples;
     console.log(`mean ${avg.toFixed(1)} ms/frame @ ${at} samples → ~${((avg * info.duration * fps) / 60000).toFixed(0)} min for the song at ${fps} fps (before encode)`);
+  } else if (mode === 'lyrics') {
+    // each word probed just after it starts and as it ends (it may build letter by letter,
+    // or be carried into frame as it's sung); seen = in frame, the right way round, big enough and opaque enough (see
+    // mv/scenes/_lyric.ts `see`) at its best probe
+    // the first moments of each word, inside a long one, and just after it ends
+    const probes = (w: { start: number; end: number }) => {
+      const d = w.end - w.start;
+      return [w.start + 0.06, w.start + 0.14, w.start + 0.26, ...(d > 0.6 ? [w.start + 0.5 * d, w.start + 0.85 * d] : []), Math.max(w.start + 0.3, w.end + 0.08)];
+    };
+    const data = JSON.parse(readFileSync(join(root, 'data', 'lyrics.json'), 'utf8')) as {
+      lines: { i: number; text: string; words: { w: string; start: number; end: number }[] }[];
+    };
+    const words = data.lines.flatMap((l) => l.words.map((w, k) => ({ key: `${l.i}:${k}`, line: l.i, w: w.w, start: w.start, end: w.end })))
+      .filter((w) => w.start >= from && w.start <= to);
+    const at = words.map(probes), ts = at.flat();
+    const res: { t: number; label: string; seen: Record<string, number> }[] = [];
+    for (let i = 0; i < ts.length; i += 60)
+      res.push(...(await page.evaluate((ts) => (window as any).__tahimik.probe(ts), ts.slice(i, i + 60))));
+    const byScene = new Map<string, { n: number; ok: number; miss: string[] }>();
+    let j0 = 0;
+    words.forEach((w, j) => {
+      const rs = res.slice(j0, (j0 += at[j].length));
+      const best = Math.max(...rs.map((r) => r.seen[w.key] ?? 0));
+      const label = rs[0].label;
+      const g = byScene.get(label) ?? { n: 0, ok: 0, miss: [] };
+      g.n++;
+      if (best >= 0.6) g.ok++;
+      else g.miss.push(`${w.start.toFixed(2)} L${w.line} "${w.w}" ${best.toFixed(2)}`);
+      byScene.set(label, g);
+    });
+    let n = 0, ok = 0;
+    for (const [label, g] of byScene) {
+      n += g.n;
+      ok += g.ok;
+      console.log(`${label.padEnd(24)} ${g.ok}/${g.n}${g.miss.length ? '   missing: ' + g.miss.join(' · ') : ''}`);
+    }
+    const fill: number = await page.evaluate(() => (window as any).__tahimik.atlas());
+    console.log(`seen ${ok}/${n} words  ·  glyph atlas ${(fill * 100).toFixed(0)} % full`);
   } else {
     const [w, h] = info.size;
     const file = V.out ?? join(outDir, from === 0 && to === info.duration ? `${base}.mp4` : `${base}_${from}-${to}.mp4`);

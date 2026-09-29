@@ -8,24 +8,31 @@
 // the sea assemble a constellation of it. A corkscrew out, an orbit, a corkscrew back in
 // through its chest star on "mundo", and a fall out the far side towards the self on the
 // sea as MUNDO forms over it (CONT to HAKBANG: the shared layout is in _mundo_cosmos).
+// The lines: in I, "Pero kahit ’di ako sumisigaw" is a caption over the crowd, typed like
+// its meters, and "May sarili rin akong" rises out of the gold in the self's own flies,
+// under MUNDO. In II each word of the first line is left in the sky where the camera looked
+// as it was sung, a constellation of its own; the second rides the fly-in above the head.
 
+import { H, W as FW } from '../../engine/config';
 import { mono, sans } from '../../engine/fonts';
 import type { RT } from '../../engine/gl';
-import { Lyrics, type Word } from '../../engine/lyrics';
+import { Lyrics, type Line, type Word } from '../../engine/lyrics';
 import { lin } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { clamp, ease, frameIdx, hash, keys, lerp, noise1, prog, spring, TAU } from '../../engine/util';
 import { basis, cam, handheld, shots, type Basis, type Cam } from '../../engine/3d/camera';
 import { LineBatch } from '../../engine/3d/lines';
-import { add, cross, dist, madd, mix3, mul, norm, sph, sub, type V3 } from '../../engine/3d/math';
+import { add, cross, dist, dot, madd, mix3, mul, norm, sph, sub, type V3 } from '../../engine/3d/math';
 import { Words, type WordShape } from '../../engine/3d/words';
 import { decay, DIVE_COL, diveIn, diveOut, Fill, impact, mergePost, towardDive } from './_fx';
 import { Crowd, figure, groundGrid, INK, LABAS_FOG, POSE, scatter, Sky, toWorld } from './_labas';
 import { Flies, Loob } from './_loob';
+import { facing, lens, type LineOpts, LyricTrack, mixPlace, TONE, VOICE, type Place } from './_lyric';
 import {
-  CHEST, CON, CON_POSE, Handover, HERO, mundoK, SELF_POS, SELF_POSE, SELF_YAW, tailCam, tailLoob, tailTimes, type Tail,
+  CHEST, CON, CON_POSE, Handover, HERO, mundoK, SELF_POS, SELF_POSE, SELF_YAW, tailCam, tailLoob, tailTimes, W2, W2_EM, type Tail,
 } from './_mundo_cosmos';
 import { figureStars, Swarm, toFrame, wordPoints } from './_mundo_fx';
+import { frontal, landing, row, shade, starWord, toneAt } from './_mundo_lyric';
 import { EMBER, GOLD, lightOf, Self } from './_self';
 
 let sky: Sky | null = null, loob: Loob | null = null, self: Self | null = null, fill: Fill | null = null;
@@ -59,6 +66,28 @@ const LOOB_I = { isleY: 26, steps: 80 };
 /** the constellation's middle, framed at the end of the pull-back */
 const FC: V3 = add(CON.pos, [0, 88, 0]);
 
+// ---- the sung lines
+/** the words as the frame opens out of the gold: dark against it */
+const SIL: V3 = [0.02, 0.015, 0.01];
+/** I: "Pero kahit ’di" over the front of the crowd; "ako sumisigaw" over its middle, square to the push-in */
+const K1A: V3 = [3.6, 3.6, -1.1], K1B: V3 = [5.17, 3.17, -7.59];
+/** I: "May sarili rin akong", home in a row on the sea under MUNDO */
+const M1: V3 = [0, 4.8, -42], M1_EM = 3;
+/** I: and first across the lens, this far down the frame */
+const M1_Y = -0.4;
+/** II: where each word of "Pero kahit ’di ako sumisigaw" is left: s after its start, screen x, y, em (of the frame height) */
+const STAMP = [
+  [0.12, 0.3, 0.35, 0.2],
+  [0.2, 0.35, -0.45, 0.2],
+  [0.1, 0.5, 0.3, 0.18],
+  [0.15, 0.55, 0.45, 0.14],
+  [0.15, 0.5, -0.45, 0.08],
+];
+/** II: "May sarili rin akong" on screen, above the head, parted this far (em) around it */
+const M2_Y = 0.78, M2_GAP = 2.2;
+const IDENT = { o: [0, 0, 0] as V3, r: [1, 0, 0] as V3, u: [0, 1, 0] as V3, n: [0, 0, 1] as V3 };
+const mean = (k: number[]) => k.reduce((s, x) => s + x, 0) / k.length;
+
 export default class Mundo extends Scene {
   maxSamples = 36;
   private W = new Words();
@@ -75,6 +104,24 @@ export default class Mundo extends Scene {
   private con!: Swarm;
   private conLines!: LineBatch;
   private hand!: Handover;
+  // the lines (I: `outer` in LABAS, `inner` in LOOB; II: `inner`), in their own batch
+  private LW = new Words();
+  private outer = new LyricTrack(this.LW);
+  private inner = new LyricTrack(this.LW);
+  private k1!: Line;
+  private m1!: Line;
+  /** the flies that write the lines: I "May sarili rin akong"; II the constellation words (in the world) */
+  private stars!: Swarm;
+  /** II: "May sarili rin akong", on the lens */
+  private stars2!: Swarm;
+  private stamps: Place[] = [];
+  /** II: how well each stamped word still reads this frame */
+  private vis: number[] = [];
+  private E2 = 14;
+  /** II: the line's width, em */
+  private span2 = 10;
+  /** I: when the line starts home */
+  private home = 0;
 
   private T1 = { cut: 0, next: 0, ako: 0, burst: 0, crash: 0, crane: 0, mundo: null as unknown as Word };
   private T2 = { cut: 0, next: 0, may: 0, tail: null as unknown as Tail };
@@ -94,9 +141,10 @@ export default class Mundo extends Scene {
       this.T2 = { cut, next, may: Lyrics.word(L.find('May sarili rin', 138), 'May').start, tail: tailTimes(L, this.audio) };
       this.buildConstellation();
       this.hand = new Handover();
+      this.lines2();
       return;
     }
-    const k1 = L.find('Pero kahit'), m1 = L.find('May sarili rin');
+    const k1 = (this.k1 = L.find('Pero kahit')), m1 = (this.m1 = L.find('May sarili rin'));
     const burst = toFrame(Lyrics.word(m1, 'May').start), mundo = Lyrics.word(m1, 'mundo');
     this.T1 = { cut, next, ako: Lyrics.word(k1, 'ako').start, burst, crash: burst - 0.55, crane: mundo.end + 0.05, mundo };
 
@@ -118,6 +166,98 @@ export default class Mundo extends Scene {
     wordPoints('MUNDO', HERO, 2500, 5).pts.forEach((q, i) =>
       this.word1.add(q.p, q.g, -0.06 - 0.05 * hash(i, 5, 5), hash(i, 5, 6) < 0.2 ? FLY_E : FLY, 0.7 + 0.5 * hash(i, 5, 7), 5, i),
     );
+    this.lines1();
+  }
+
+  private lines1() {
+    const T = this.T1, k1 = this.k1, m1 = this.m1, U: V3 = [0, 1, 0];
+    // the caption, typed like the meters: its first half over the front of the crowd (cut
+    // with the shot), the rest over the middle for the push-in, blown off as the needle slams
+    const M = { voice: VOICE.mono, enter: 'type', tone: TONE.labas, alpha: 0.9 } as const;
+    this.outer
+      .add(k1, { ...M, size: 0.55, at: facing(this.along(72.9).pos, K1A), wrap: 20, skip: ['ako', 'sumisigaw'], out: T.ako, exitDur: 0.001 })
+      .add(k1, { ...M, size: 0.5, at: { pos: K1B, right: GR, up: U }, skip: ['pero', 'kahit', 'di'], out: T.crash + 0.08, exit: 'burst', exitDur: 0.3 });
+    // "May sarili rin akong": out of the light with the camera, big across the lens (dark
+    // against the gold until it has opened out, over a halo against the flies' glare), then
+    // home into its row on the sea under MUNDO as its flies rise to it, just as "mundo" comes
+    const Q = VOICE.quiet, r = row(this.LW, m1, Q, (k) => k < 4);
+    const LF = Math.min(0.19, (0.84 * FW) / (r.w * H));
+    const slot = (k: number): Place => ({ pos: madd(M1, [1, 0, 0], r.xs[k] * M1_EM), right: [1, 0, 0], up: [0, 1, 0], size: M1_EM });
+    const home = (this.home = Lyrics.word(m1, 'akong').start + 0.19);
+    const L15: LineOpts = {
+      voice: Q, size: M1_EM, at: slot(0), tone: TONE.loob, skip: ['mundo'], out: T.next - 1, exitDur: 0.6,
+      wordAt: (k, t, b) => {
+        const u = prog(t, home, home + 0.5, ease.inOutCubic);
+        return u >= 1 ? slot(k) : mixPlace(lens(b, (r.xs[k] * LF * H) / (FW / 2), M1_Y, 8, LF), slot(k), u);
+      },
+      each: (k, _i, _u, t) => {
+        const d = 1 - prog(t, T.burst + 0.5, T.burst + 0.9);
+        return d > 0 ? { col: mix3(toneAt(TONE.loob, m1.words[k], t), SIL, d) } : undefined;
+      },
+    };
+    for (const o of [...shade(L15), L15]) this.inner.add(m1, o);
+    this.stars = new Swarm(1400);
+    m1.words.slice(0, 4).forEach((w, k) => starWord(this.stars, Q, w.w, r.xs[k], r.wem[k], k, 110, 31 + k, 2.4));
+  }
+
+  private lines2() {
+    const L = this.lyrics, T = this.T2;
+    const k2 = (this.k1 = L.find('Pero kahit', 136)), m2 = (this.m1 = L.find('May sarili rin', 138));
+    // "Pero kahit ’di ako sumisigaw": each word left in the world facing where the camera
+    // was as it was sung, and written there in flies out of the chest star
+    const V = VOICE.mono;
+    this.stars = new Swarm(1600);
+    this.stamps = k2.words.map((w, k) => {
+      const [ts, x, y, frac] = STAMP[k];
+      const c = this.camTwo(w.start + ts);
+      const P = lens(basis(c), x, y, dist(c.pos, c.tgt), frac);
+      const s = P.size!, R = P.right!, U = P.up!;
+      wordPoints(w.w.toUpperCase(), V.font, 150 + 30 * w.w.length, 51 + k).pts.forEach((q, i) =>
+        this.stars.add(madd(madd(P.pos, R, q.p[0] * s), U, q.p[1] * s), k, 2.2 + 1.4 * hash(i, 51 + k, 5), hash(i, 51 + k, 6) < 0.2 ? FLY_E : FLY, 0.6 + 0.5 * hash(i, 51 + k, 7), 51 + k, i),
+      );
+      return P;
+    });
+    this.vis = this.stamps.map(() => 1);
+    const L30: LineOpts = {
+      voice: V, size: 1, at: this.stamps[0], wordAt: (k) => this.stamps[k], enter: 'fade', settle: 0.25, tone: TONE.loob,
+      out: T.may - 0.27, exitDur: 0.3,
+      each: (k, _i, _u, t) => {
+        const d = 1 - prog(t, T.cut + 0.45, T.cut + 0.75);
+        return { alpha: this.vis[k], col: d > 0 ? mix3(toneAt(TONE.loob, k2.words[k], t), SIL, d) : undefined };
+      },
+    };
+    for (const o of [...shade(L30), L30]) this.inner.add(k2, o);
+    // "May sarili rin akong": fixed to the lens above the head, as big as it can be and still
+    // fit across on the last look at "akong", growing as the camera falls into the star; it
+    // parts in the middle, where the head rises into the top of the frame at the end
+    const Q = VOICE.quiet, r = row(this.LW, m2, Q, (k) => k < 4);
+    const mid = (r.xs[1] + r.wem[1] / 2 + r.xs[2] - r.wem[2] / 2) / 2;
+    const xs = r.xs.map((x, k) => x - mid + (k < 2 ? -M2_GAP : M2_GAP) / 2);
+    const span = 2 * Math.max(r.wem[0] / 2 - xs[0], xs[3] + r.wem[3] / 2);
+    const bl = basis(this.camTwo(Lyrics.word(m2, 'akong').start + 0.27));
+    this.span2 = span;
+    this.E2 = Math.min(18, this.fit2(bl));
+    const L31: LineOpts = {
+      voice: Q, size: this.E2, at: (_t, b) => this.line2(b), enter: 'fade', settle: 0.2, tone: TONE.loob, skip: ['mundo'], exit: 'none',
+      wordAt: (k, _t, b) => {
+        const P = this.line2(b);
+        return { ...P, pos: madd(P.pos, b.R, xs[k] * P.size!) };
+      },
+    };
+    for (const o of [...shade(L31), L31]) this.inner.add(m2, o);
+    this.stars2 = new Swarm(1400);
+    m2.words.slice(0, 4).forEach((w, k) => starWord(this.stars2, Q, w.w, xs[k], r.wem[k], k, 110, 41 + k, 2.4));
+  }
+
+  /** II: the em at which the second line spans .86 of the frame, at the chest star's depth */
+  private fit2(b: Basis) {
+    return (0.86 * FW * dot(sub(CHEST, b.pos), b.F)) / (b.focal * this.span2);
+  }
+
+  /** II: the second line's centre, on the lens M2_Y up at the chest star's depth, E2 to the em (but never wider than the frame) */
+  private line2(b: Basis): Place {
+    const z = dot(sub(CHEST, b.pos), b.F);
+    return { pos: madd(madd(b.pos, b.F, z), b.U, (M2_Y * H * z) / (2 * b.focal)), right: b.R, up: b.U, size: Math.min(this.E2, this.fit2(b)) };
   }
 
   render(f: Frame, out: RT): Post {
@@ -138,19 +278,18 @@ export default class Mundo extends Scene {
     return cam(madd(tgt, D2, lerp(4.2, 2.6, k)), tgt, 38);
   }
 
+  /** along the front of the crowd, their meters jumping, to the one at the edge */
+  private along(t: number): Cam {
+    const T = this.T1, k = ease.inOutSine(prog(t, T.cut, T.ako + 0.4));
+    return cam(mix3([15.5, 1.45, 11.5], [5.2, 1.5, 9.4], k), mix3([9, 1.7, -3], [1.2, 1.3, -0.2], k), 38);
+  }
+
   private camLabas(t: number): Cam {
     const T = this.T1;
     if (t < T.crash)
       return handheld(
         shots(t, [
-          {
-            // along the front of the crowd, their meters jumping, to the one at the edge
-            t: T.cut,
-            cam: (t) => {
-              const k = prog(t, T.cut, T.ako + 0.4);
-              return cam(mix3([15.5, 1.45, 11.5], [5.2, 1.5, 9.4], ease.inOutSine(k)), mix3([9, 1.7, -3], [1.2, 1.3, -0.2], ease.inOutSine(k)), 38);
-            },
-          },
+          { t: T.cut, cam: (t) => this.along(t) },
           { t: T.ako, snap: 0.38, mode: 'pan', kick: 0.06, cam: (t) => this.push(t) },
         ]),
         t, 0.003, 0.7, 1,
@@ -175,6 +314,9 @@ export default class Mundo extends Scene {
     const light = lightOf(this.liwanag(t)) * (1 + 6 * crash);
     self!.draw(out, b, t, { pos: S, yaw: S_YAW, pose: S_POSE, light, col: SELF_INK, w: 1.3 }, { fog: LABAS_FOG, nearFade: 0.25 });
     this.drawGauge(out, b, t, crash);
+    this.LW.clear();
+    this.outer.draw(t, b);
+    this.LW.draw(out, b, { nearFade: 0.2 });
     const k = diveOut(t, T.burst, 0.45);
     fill!.draw(out, DIVE_COL, k, 'over');
     return towardDive(mergePost(POST, { ca: 0.5 * crash }), k);
@@ -270,10 +412,21 @@ export default class Mundo extends Scene {
     });
     this.W.clear().word(this.shape('MUNDO'), { pos: W1, height: W1_EM, col: mul(GOLD, 0.6), each: (i) => ({ alpha: 0.32 * k[i] ** 2 }) });
     this.W.draw(out, b, { depth, blend: 'add' });
+    LyricTrack.mark(this.m1, T.mundo, b, W1, [1, 0, 0], W1_EM, this.shape('MUNDO'), mean(k));
+    // the line under it, its flies rising out of the light to meet it as it comes home
+    const gone = 1 - prog(t, T.next - 1, T.next - 0.2);
+    this.stars.draw(out, b, {
+      t, frame: { o: M1, r: [M1_EM, 0, 0], u: [0, M1_EM, 0], n: [0, 0, M1_EM] }, k: [0, 1, 2, 3].map((i) => prog(t, this.home - 0.1 + 0.05 * i, this.home + 0.45 + 0.05 * i, ease.inOutSine) * gone),
+      src: G, spread: [1, 1, 1], arc: 2.5, jit: 0.1, flare: 0.4, depth,
+    });
     const sc = 4, off = self!.chest({ pos: [0, 0, 0], pose: S_POSE, scale: sc });
     self!.draw(out, b, t, { pos: sub(G, off), pose: S_POSE, scale: sc, noBody: true, light: light * (2 + 3 * boom) }, { depth });
     const k0 = diveIn(t, T.burst, 0.6);
     fill!.draw(out, DIVE_COL, k0, 'over');
+    // its words over the gold
+    this.LW.clear();
+    this.inner.draw(t, b);
+    this.LW.draw(out, b, { depth });
     return towardDive(mergePost(POST, { ca: 0.9 * boom }), k0);
   }
 
@@ -354,14 +507,35 @@ export default class Mundo extends Scene {
       const g = k.map((x) => ease.inOutSine(clamp((x - 0.75) / 0.25)));
       this.conLines.draw(out, b, { depth, uniforms: { uG: [...g, 0, 0, 0, 0] } });
       self!.draw(out, b, t, { pos: CON.pos, yaw: CON.yaw, pose: CON_POSE, scale: CON.scale, noBody: true, light: light * 2.2, core: 0.03, halo: 0.08 }, { depth });
+      // the lines' flies: the stamped words (back into the star once they no longer read), and the line on the lens
+      // a word left behind reads until it has turned well away; once sung, it goes sooner
+      this.vis = this.stamps.map((P, k) => lerp(frontal(P, b), frontal(P, b, 0.55, 0.8), prog(t, this.k1.words[k].end, this.k1.words[k].end + 0.1)));
+      const gone = 1 - prog(t, T.may - 0.27, T.may + 0.1);
+      this.stars.draw(out, b, {
+        t, frame: IDENT, k: this.k1.words.map((w, k) => landing(w, t, T.cut) * this.vis[k] * gone),
+        src: CHEST, spread: [3, 3, 3], arc: 30, jit: 0.6, flare: 0.5, depth,
+      });
+      const P = this.line2(b), E = P.size!;
+      this.stars2.draw(out, b, {
+        t, frame: { o: P.pos, r: mul(b.R, E), u: mul(b.U, E), n: mul(b.F, E) }, k: this.m1.words.slice(0, 4).map((w) => landing(w, t)),
+        src: CHEST, spread: [4, 4, 4], arc: 0.8, jit: 0.4, flare: 0.4, depth,
+      });
     }
-    this.hand.draw(out, b, depth, t, mundoK(t, this.lyrics));
+    const mk = mundoK(t, this.lyrics);
+    this.hand.draw(out, b, depth, t, mk);
+    LyricTrack.mark(this.m1, Lyrics.word(this.m1, 'mundo'), b, W2, [1, 0, 0], W2_EM, this.shape('MUNDO'), mean(mk));
     self!.draw(out, b, t, { pos: SELF_POS, yaw: SELF_YAW, pose: SELF_POSE, light, col: INK.shade }, { depth });
     // the pass through the star: a white-gold instant
     const pass = Math.exp(-(((t - th) / 0.06) ** 2));
     fill!.draw(out, DIVE_COL, 0.9 * pass, 'add');
     const k0 = diveIn(t, T.cut, 0.6);
     fill!.draw(out, DIVE_COL, k0, 'over');
+    // the words over the gold, until the camera is through the star
+    if (!through) {
+      this.LW.clear();
+      this.inner.draw(t, b);
+      this.LW.draw(out, b, { depth });
+    }
     return towardDive(mergePost(POST, impact(t, [th], { flash: 0.15, ca: 0.8, shake: 6 })), k0);
   }
 }

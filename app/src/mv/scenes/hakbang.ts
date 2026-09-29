@@ -8,20 +8,25 @@
 // school) into view as it passes. The dawn comes up; on "dahan-dahan" time slows again and
 // the camera cranes slowly back and up until LOOB has become LABAS at daybreak: grey lines,
 // a pale warm sky, and the one light (IMPACT to DAMI III).
+// Every other word is set in LOOB's warm serif around those three: the lead-in rising under
+// LAKAS-LOOB through the fall, "Kahit" on the sea, "lang" under HAKBANG, "paabante" at the
+// foot and thrown out ahead on the shockwave, the third line over the sea in the wide, and
+// "Pwede namang … lang" either side of the crane.
 
 import { sans, serif, type FontSpec } from '../../engine/fonts';
 import { clearRT, type RT } from '../../engine/gl';
-import { Lyrics, type Word } from '../../engine/lyrics';
+import { Lyrics, type Line, type Word } from '../../engine/lyrics';
 import { lin } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { clamp, ease, keys, lerp, prog } from '../../engine/util';
-import { basis, cam, handheld, shake, shots, type Cam } from '../../engine/3d/camera';
-import { dist, madd, mix3, mul, norm, type V3 } from '../../engine/3d/math';
+import { basis, cam, handheld, shake, shots, type Basis, type Cam } from '../../engine/3d/camera';
+import { dist, dot, madd, mix3, mul, norm, sub, type V3 } from '../../engine/3d/math';
 import { Words, type WordShape } from '../../engine/3d/words';
 import { decay, impact, mergePost } from './_fx';
 import { DAWN_SKY, OuterWorld, plantFoot, Spray, stepAt, warpTime, type Slow, type StepTimes } from './_hakbang_world';
 import { INK, LABAS_FOG, Sky } from './_labas';
 import { Loob, type LoobOpts } from './_loob';
+import { facing, lens, LyricTrack, mixPlace, TONE, VOICE } from './_lyric';
 import { Handover, HERO, LAND_POS, LAND_TGT, LOOB_TAIL, mundoK, O, tailCam, tailTimes, type Tail } from './_mundo_cosmos';
 import { Blend, toFrame } from './_mundo_fx';
 import { GOLD, lightOf, Self } from './_self';
@@ -33,6 +38,8 @@ const at = (x: number, y: number, z: number): V3 => [O[0] + x, O[1] + y, O[2] + 
 const POST: Post = { bloom: 0.9, grain: 0.035, vignette: 0.3 };
 /** the self once it has come to rest: a touch brighter than the crowd's ash */
 const SELF_INK = mul(lin('ash'), 1.45);
+/** the echo: a paler grey, so it reads on the dawn */
+const ECHO_INK = mix3(SELF_INK, lin('paper'), 0.5);
 /** LOOB's words are light */
 const WORD_COL = mul(lin('paper'), 1.5), WORD_HOT = mul(GOLD, 2.2);
 const QUIET = serif(100, 360, true);
@@ -42,6 +49,15 @@ const P_LAKAS = at(-0.4, 11, -50);
 const P_HAKBANG = at(-16, 3.3, -3.6);
 const P_DAHAN = at(0, 9.5, -92);
 const P_ECHO = at(0, 6.5, -10);
+/** the echo's own air: LABAS's fog would grey it into the dawn */
+const ECHO_FOG: [number, number] = [30, 0.012];
+
+/** where chars [i0, i1) of a shape sit (em from its centre) and how wide they are, for a mark */
+function part(s: WordShape, i0: number, i1: number): [number, WordShape] {
+  let l = Infinity, r = -Infinity;
+  for (const { g, i, cx } of s.glyphs) if (i >= i0 && i < i1) (l = Math.min(l, cx - g.w / 2)), (r = Math.max(r, cx + g.w / 2));
+  return [((l + r) / 2 - s.w / 2) / s.r, { ...s, w: r - l }];
+}
 
 interface Times extends StepTimes {
   cut: number;
@@ -52,6 +68,7 @@ interface Times extends StepTimes {
   hak: Word;
   dahan: Word;
   echo: [Word, Word];
+  lines: { bridge: Line; kahit: Line; pw: Line; echo: Line };
   /** the dawn starts on "’Di naman", the crane on "Pwede", LABAS takes over from lab0 to lab1 */
   dawn0: number;
   crane0: number;
@@ -69,6 +86,7 @@ export default class Hakbang extends Scene {
   private spray!: Spray;
   private T!: Times;
   private slows: Slow[] = [];
+  private track = new LyricTrack(this.W);
 
   private shape(text: string, f: FontSpec = HERO) {
     const k = text + '|' + f.family + f.weight + (f.italic ? 'i' : '');
@@ -90,6 +108,7 @@ export default class Hakbang extends Scene {
       cut: this.params.cut, next: this.params.next, tail: tailTimes(L, A),
       lakasW, isang: Lyrics.word(kahit, 'isang'), hak: Lyrics.word(kahit, 'hakbang'), dahan: Lyrics.word(pw, 'dahan'),
       echo: [echo.words[0], echo.words[1]],
+      lines: { bridge, kahit, pw, echo },
       lakas: lakasW.start, paab: paab.start,
       // the foot comes down on the first downbeat of "paabante"
       plant: toFrame(A.timeOfBar(Math.round(A.barAt(paab.start + 1)))),
@@ -108,6 +127,42 @@ export default class Hakbang extends Scene {
     this.spray = new Spray();
     for (const s of ['LAKAS-LOOB', 'ISANG HAKBANG', 'DAHAN-DAHAN']) this.shape(s);
     this.shape('dahan-dahan lang', QUIET);
+    this.stage(bridge, kahit, di, pw);
+  }
+
+  /** the rest of the bridge, in LOOB's warm serif, each part where its shot will see it */
+  private stage(bridge: Line, kahit: Line, di: Line, pw: Line) {
+    const T = this.T, V = this.track;
+    const eyeAt = (t: number) => basis(this.camAt(t));
+    const soft = { voice: VOICE.soft, tone: TONE.loob };
+    // under LAKAS-LOOB: through the fall it rides low in the frame, under MUNDO's swarm, then
+    // settles into the sea air below where the word will rise
+    const p32 = facing(eyeAt(148.6), at(-0.4, 6.2, -40), 2.3);
+    V.add(bridge, {
+      ...soft, size: 2.3, wrap: 14, skip: ['lakas-loob'], out: T.isang.start - 0.4, exitDur: 0.45,
+      at: (t, b) => mixPlace(lens(b, 0, -0.5, 16, 0.062), p32, ease.inOutCubic(prog(t, T.lakas - 0.95, T.lakas + 0.05))),
+    });
+    // on the sea ahead of it, low, as the camera settles; the whip to its feet takes it
+    V.add(kahit, { ...soft, size: 0.55, at: facing(eyeAt(150.3), at(0.9, 1.25, -6)), skip: ['isang', 'hakbang', 'lang', 'paabante'], enter: 'slam', punch: 0.4, out: T.isang.start + 0.3, exitDur: 0.2 });
+    // under HAKBANG, across the sea
+    V.add(kahit, { ...soft, size: 1.4, at: { pos: at(-16, 1.25, -4.4), right: [0, 0, -1] }, skip: ['kahit', 'isang', 'hakbang', 'paabante'], enter: 'slam', out: T.paab + 0.1, exitDur: 0.4 });
+    // "paabante" in slow motion at the foot, letter by letter; the step throws it out ahead on
+    // the shock front, turning to the wide
+    const fb = eyeAt(153.5);
+    const p1 = facing(fb, madd(madd(fb.pos, fb.F, 2.6), fb.R, 0.62), 0.2);
+    const p3 = facing(eyeAt(155.2), at(0.3, 2.4, -19), 2.6);
+    V.add(kahit, {
+      voice: VOICE.quiet, tone: TONE.lit, size: 0.2, skip: ['kahit', 'isang', 'hakbang', 'lang'], spread: 0.85,
+      at: (t) => mixPlace(p1, p3, ease.outCubic(prog(t, T.plant, T.plant + 1.3))),
+      each: (_k, _i, _u, t) => ({ scale: 1 + 0.5 * decay(t, [T.plant], 0.14) }),
+      out: Lyrics.word(kahit, 'paabante').end + 0.1, exit: 'scatter', exitDur: 0.45,
+    });
+    // the third line hangs over the sea in the wide, as the dawn comes up
+    V.add(di, { ...soft, size: 3, wrap: 9.5, at: facing(eyeAt(158.3), at(-10, 6, -32)), out: Lyrics.word(di, 'agad').end + 0.15, exitDur: 0.6 });
+    // "Pwede namang" low on the water as the crane starts, left as it pulls away
+    V.add(pw, { ...soft, size: 0.72, at: facing(eyeAt(162.5), at(0, 1.25, -9)), skip: ['dahan-dahan', 'lang'], out: T.lab0 + 0.2, exitDur: 0.8 });
+    // and its "lang" beside DAHAN-DAHAN at the horizon, on the same baseline
+    V.add(pw, { voice: VOICE.quiet, tone: TONE.loob, size: 8.5, at: { pos: at(48, 7.6, -92) }, skip: ['pwede', 'namang', 'dahan-dahan'], enter: 'fade', settle: 0.6, out: T.lab0 + 0.2, exitDur: 1.2 });
   }
 
   // ---------------------------------------------------------------- camera
@@ -253,63 +308,84 @@ export default class Hakbang extends Scene {
     return mergePost({ ...POST, exposure: 1 - 0.14 * held }, impact(t, [T.plant], { flash: 0.1, tau: 0.1, ca: 1.1, shake: 14 }));
   }
 
-  private words(t: number, out: RT, b: ReturnType<typeof basis>, depth: RT) {
-    const T = this.T, W = this.W.clear();
-    let any = false;
+  private words(t: number, out: RT, b: Basis, depth: RT) {
+    const T = this.T, W = this.W.clear(), L = T.lines;
+    this.track.draw(t, b);
     // LAKAS-LOOB rising off the sea, letter by letter, warming with the light
     const outL = 1 - prog(t, T.isang.start - 0.4, T.isang.start + 0.05, ease.inCubic);
     if (outL > 0 && t > T.lakas - 0.3) {
-      const w = T.lakasW, glow = prog(t, T.lakas, w.end, ease.inOutSine);
-      W.word(this.shape('LAKAS-LOOB'), {
+      const w = T.lakasW, glow = prog(t, T.lakas, w.end, ease.inOutSine), s = this.shape('LAKAS-LOOB');
+      let a = 0;
+      W.word(s, {
         pos: P_LAKAS, height: 6.5, col: mix3(WORD_COL, WORD_HOT, 0.35 * glow),
         each: (i) => {
-          const c = w.c[i] ?? w.start, k = prog(t, c - 0.12, c + 0.55, ease.outBack);
-          return { off: [0, -5 * (1 - k), 0], scale: 0.7 + 0.3 * k, alpha: prog(t, c - 0.12, c + 0.12) * outL };
+          const c = w.c[i] ?? w.start, k = prog(t, c - 0.12, c + 0.55, ease.outBack), al = prog(t, c - 0.12, c + 0.12) * outL;
+          a += al / s.glyphs.length;
+          return { off: [0, -5 * (1 - k), 0], scale: 0.7 + 0.3 * k, alpha: al };
         },
       });
-      any = true;
+      LyricTrack.mark(L.bridge, w, b, P_LAKAS, [1, 0, 0], 6.5, s, a);
     }
     // ISANG HAKBANG slammed down letter by letter, over the sea beyond the feet
     const outH = 1 - prog(t, T.paab + 0.1, T.paab + 0.7, ease.inOutSine);
     if (outH > 0 && t > T.isang.start - 0.1) {
       const cI = (i: number) => (i < 5 ? T.isang.c[i] : i > 5 ? T.hak.c[i - 6] : T.isang.end) ?? T.isang.start;
-      W.word(this.shape('ISANG HAKBANG'), {
+      const s = this.shape('ISANG HAKBANG'), a = [0, 0];
+      W.word(s, {
         pos: P_HAKBANG, right: [0, 0, -1], height: 2.8, col: WORD_COL,
         each: (i) => {
-          const c = cI(i), k = prog(t, c - 0.05, c + 0.3, ease.outCubic);
-          return { off: [0, 2.2 * (1 - k), 0], spin: 0.35 * (1 - k) * (i % 2 ? 1 : -1), scale: 1.25 - 0.25 * k, alpha: prog(t, c - 0.05, c + 0.06) * outH };
+          const c = cI(i), k = prog(t, c - 0.05, c + 0.3, ease.outCubic), al = prog(t, c - 0.05, c + 0.06) * outH;
+          if (i !== 5) a[i < 5 ? 0 : 1] += al / (i < 5 ? 5 : 7);
+          return { off: [0, 2.2 * (1 - k), 0], spin: 0.35 * (1 - k) * (i % 2 ? 1 : -1), scale: 1.25 - 0.25 * k, alpha: al };
         },
       });
-      any = true;
+      ([[T.isang, 0, 5], [T.hak, 6, 13]] as const).forEach(([w, i0, i1], j) => {
+        const [x, ps] = part(s, i0, i1);
+        LyricTrack.mark(L.kahit, w, b, madd(P_HAKBANG, [0, 0, -1], x * 2.8), [0, 0, -1], 2.8, ps, a[j]);
+      });
     }
     // DAHAN-DAHAN at the horizon, surfacing slowly into the dawn
     const outD = 1 - prog(t, T.lab0 + 0.2, T.lab1 - 0.2, ease.inOutSine);
     if (outD > 0 && t > T.dahan.start - 0.2) {
-      const w = T.dahan;
-      W.word(this.shape('DAHAN-DAHAN'), {
+      const w = T.dahan, s = this.shape('DAHAN-DAHAN');
+      let a = 0;
+      W.word(s, {
         pos: P_DAHAN, height: 13, col: mix3(WORD_COL, WORD_HOT, 0.25),
         each: (i) => {
           const k = prog(t, (w.c[i] ?? w.start) - 0.1, (w.c[i] ?? w.start) + 1.3, ease.outCubic);
+          a += (k * outD) / s.glyphs.length;
           return { off: [0, -2.5 * (1 - k), 0], alpha: k * outD };
         },
       });
-      any = true;
+      LyricTrack.mark(L.pw, w, b, P_DAHAN, [1, 0, 0], 13, s, a);
     }
-    if (any) W.draw(out, b, { depth, blend: 'add' });
+    if (W.n) W.draw(out, b, { depth, blend: 'add' });
   }
 
   /** the echo, quiet and grey, over the self once it is LABAS again */
-  private echo(t: number, out: RT, b: ReturnType<typeof basis>) {
+  private echo(t: number, out: RT, b: Basis) {
     const [e1, e2] = this.T.echo;
     if (t < e1.start - 0.1) return;
-    const cI = (i: number) => (i < 11 ? e1.c[i] : i > 11 ? e2.c[i - 12] : e1.end) ?? e1.start;
-    this.W.clear().word(this.shape('dahan-dahan lang', QUIET), {
-      pos: P_ECHO, height: 3.2, col: SELF_INK,
+    // each word's letters follow its syllables, squeezed into half a second
+    const sq = (w: Word, c: number | undefined) => w.start + ((c ?? w.start) - w.start) * Math.min(1, 0.5 / (w.end - w.start));
+    const cI = (i: number) => (i < 11 ? sq(e1, e1.c[i]) : i > 11 ? sq(e2, e2.c[i - 12]) : e1.end);
+    const s = this.shape('dahan-dahan lang', QUIET), a = [0, 0];
+    this.W.clear().word(s, {
+      pos: P_ECHO, height: 3.2, col: ECHO_INK,
       each: (i) => {
-        const k = prog(t, cI(i) - 0.05, cI(i) + 0.6, ease.outCubic);
-        return { off: [0, -0.15 * (1 - k), 0], alpha: 0.85 * k };
+        const k = prog(t, cI(i) - 0.05, cI(i) + 0.45, ease.outCubic), al = 0.9 * k;
+        if (i !== 11) a[i < 11 ? 0 : 1] += al / (i < 11 ? 11 : 4);
+        // a breath of the light while each word is sung
+        const w = i < 11 ? e1 : e2, heat = t < w.start ? 0 : t <= w.end ? 1 : Math.exp(-(t - w.end) / 0.5);
+        return { off: [0, -0.15 * (1 - k), 0], alpha: al, col: mix3(ECHO_INK, WORD_HOT, 0.3 * heat) };
       },
     });
-    this.W.draw(out, b, { fog: LABAS_FOG });
+    this.W.draw(out, b, { fog: ECHO_FOG });
+    // (seen through the same air it is drawn in)
+    const z = dot(sub(P_ECHO, b.pos), b.F), air = Math.exp(-Math.max(z - ECHO_FOG[0], 0) * ECHO_FOG[1]);
+    ([[e1, 0, 11], [e2, 12, 16]] as const).forEach(([w, i0, i1], j) => {
+      const [x, ps] = part(s, i0, i1);
+      LyricTrack.mark(this.T.lines.echo, w, b, madd(P_ECHO, [1, 0, 0], x * 3.2), [1, 0, 0], 3.2, ps, a[j] * air);
+    });
   }
 }

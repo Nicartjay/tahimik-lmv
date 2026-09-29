@@ -3,11 +3,14 @@
 // them, spirals out and passes close behind the self, standing still at the yard's edge
 // by the fence (GILID rises beside them), then cranes up over the ring as NAKIKINIG
 // curls round it. On "sumasabay" the whole yard sways as one, the self alone doesn't; the
-// laughter starts rippling out through the ground: the sea of the next shot.
+// laughter starts rippling out through the ground: the sea of the next shot. The rest of
+// both lines is the self's quiet voice: "Nakatayo sa" hangs over the ring as the camera
+// pulls away, "lang" sits on GILID's shoulder, and "pero 'di / sumasabay" stands over the
+// six, the one thing besides the self that doesn't sway with them.
 
 import { sans } from '../../engine/fonts';
 import type { RT } from '../../engine/gl';
-import { Lyrics, type Word } from '../../engine/lyrics';
+import { Lyrics, type Line, type Word } from '../../engine/lyrics';
 import { lin } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { clamp, ease, hash, lerp, noise1, prog, smoothstep, TAU } from '../../engine/util';
@@ -19,6 +22,7 @@ import {
   addFigure, building, figure, groundGrid, INK, LABAS_FOG, lerpPose, POSE, rect, scatter, Sky, wireBox,
   type Member, type Pose,
 } from './_labas';
+import { facing, LyricTrack, VOICE } from './_lyric';
 import { lightOf, Self } from './_self';
 
 let sky: Sky | null = null, self: Self | null = null;
@@ -169,6 +173,8 @@ export default class Gilid extends Scene {
   private gilid!: WordShape;
   private naki!: WordShape;
   private lines!: { sabay: Word; gilid: Word; nakikinig: Word };
+  private l!: { a: Line; b: Line };
+  private track!: LyricTrack;
 
   async init() {
     sky ??= new Sky();
@@ -195,6 +201,27 @@ export default class Gilid extends Scene {
     const L = this.lyrics;
     const l1 = L.find('Nakatayo', this.ctx.start - 1), l2 = L.find('Nakikinig', this.ctx.start);
     this.lines = { sabay: Lyrics.word(l2, 'sumasabay'), gilid: Lyrics.word(l1, 'gilid'), nakikinig: Lyrics.word(l2, 'nakikinig') };
+    this.l = { a: l1, b: l2 };
+    const gone = l2.words[0].start - 0.1, g = this.gilidAt(), lang = Lyrics.word(l1, 'lang');
+    this.track = new LyricTrack(this.W)
+      // over the ring's near side, facing the camera mid-pull
+      .add(l1, { voice: VOICE.quiet, size: 0.75, at: facing(basis(this.cam(11.6)), [-1.9, 2.9, 1.3]), skip: ['gilid', 'lang'], out: lang.start + 0.3 })
+      .add(l1, {
+        voice: VOICE.quiet, size: 0.6, enter: 'drop', skip: ['nakatayo', 'sa', 'gilid'], out: gone,
+        at: { pos: madd(add(g.pos, [0, 1.18, 0]), g.right, 0.75), right: g.right },
+      })
+      // over the six, square to the crane's top; it leaves falling into the ripples
+      .add(l2, {
+        voice: VOICE.quiet, size: 1.3, wrap: 4.6, skip: ['nakikinig'], enter: 'drop', exit: 'fall', hold: 1,
+        at: facing(basis(this.cam(this.lines.sabay.start)), [0, 4.1, 0]),
+      });
+  }
+
+  /** GILID's place: beside the self, square to the camera as the word lands */
+  private gilidAt() {
+    const wb = basis(this.cam(this.lines.gilid.end + 0.15));
+    const right = norm([wb.R[0], 0, wb.R[2]]);
+    return { pos: add(madd(SELF_POS, right, 1.55), [0, 0.95, 0]) as V3, right };
   }
 
   /** the camera: spiral out of the ring, pass behind the self, crane up and over */
@@ -240,34 +267,36 @@ export default class Gilid extends Scene {
     self!.draw(out, b, t, { pos: SELF_POS, yaw: SELF_YAW, pose, col: SELF_INK, light: lightOf(this.liwanag(t)) }, { fog: LABAS_FOG });
 
     this.W.clear();
-    this.wordGilid(t);
-    this.wordNaki(t);
+    this.wordGilid(t, b);
+    this.wordNaki(t, b);
+    this.track.draw(t, b);
     this.W.draw(out, b, { fog: LABAS_FOG });
     return { bloom: 0.8, grain: 0.035, vignette: 0.35 };
   }
 
   /** GILID: letters rising out of the ground beside the self as each is sung */
-  private wordGilid(t: number) {
+  private wordGilid(t: number, b: Basis) {
     const w = this.lines.gilid;
     const vis = 1 - prog(t, this.lines.nakikinig.start + 0.6, this.lines.nakikinig.start + 1.4);
     if (t < w.start - 0.1 || vis <= 0) return;
-    // world-fixed beside the self, square to the camera as the word lands; the orbit then
-    // carries it across the frame
-    const wb = basis(this.cam(w.end + 0.15));
-    const right = norm([wb.R[0], 0, wb.R[2]]);
-    const pos: V3 = add(madd(SELF_POS, right, 1.7), [0, 0.95, 0]);
+    // world-fixed; the orbit then carries it across the frame
+    const { pos, right } = this.gilidAt();
+    let a = 0;
     this.W.word(this.gilid, {
       pos, right, up: [0, 1, 0], height: 1.3, col: mul(lin('paper'), 1.25),
       each: (i) => {
         const k = Lyrics.charProgress(w, i, t);
         const rise = ease.outBack(clamp(k * 1.6));
-        return { off: [0, (rise - 1) * 1.4 - (1 - vis) * 1.6, 0], alpha: smoothstep(0, 0.25, k) * vis, tilt: (1 - rise) * 0.6 };
+        const alpha = smoothstep(0, 0.25, k) * vis;
+        a += alpha / this.gilid.glyphs.length;
+        return { off: [0, (rise - 1) * 1.4 - (1 - vis) * 1.6, 0], alpha, tilt: (1 - rise) * 0.6 };
       },
     });
+    LyricTrack.mark(this.l.a, w, b, pos, right, 1.3, this.gilid, a);
   }
 
   /** NAKIKINIG: an arc of standing letters curling round the ring, each lifting as sung */
-  private wordNaki(t: number) {
+  private wordNaki(t: number, b: Basis) {
     const w = this.lines.nakikinig;
     const vis = 1 - prog(t, this.lines.sabay.start + 0.2, this.lines.sabay.start + 1.2);
     if (t < w.start - 0.1 || vis <= 0) return;
@@ -275,6 +304,7 @@ export default class Gilid extends Scene {
     const s = this.naki, k = h / 320, x0 = s.w / 2;
     const Rt: V3 = [Math.cos(thc), 0, -Math.sin(thc)];
     const pos: V3 = [Math.sin(thc) * r, h * 0.42, Math.cos(thc) * r];
+    let a = 0;
     this.W.word(s, {
       pos, right: Rt, up: [0, 1, 0], height: h, col: mul(lin('paper'), 1.2),
       each: (i, u) => {
@@ -285,11 +315,14 @@ export default class Gilid extends Scene {
         const lift = ease.outBack(clamp(c * 1.4));
         // listening: the letters shiver with the laughter they hear
         const shiver = 0.04 * Math.sin(t * 31 + i * 2.1) * this.audio.env('vocals', t);
+        const alpha = smoothstep(0, 0.2, c) * vis;
+        a += alpha / s.glyphs.length;
         return {
           off: add(sub(onArc, lin0), [0, (lift - 1) * 1.1 - (1 - vis) * 1.2 + shiver, 0]),
-          tilt: -d, alpha: smoothstep(0, 0.2, c) * vis, spin: (1 - lift) * 0.4 * (i % 2 ? 1 : -1),
+          tilt: -d, alpha, spin: (1 - lift) * 0.4 * (i % 2 ? 1 : -1),
         };
       },
     });
+    LyricTrack.mark(this.l.b, w, b, pos, Rt, h, s, a);
   }
 }

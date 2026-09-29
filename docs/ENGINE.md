@@ -128,3 +128,17 @@ video is a camera move inside the scene.
 | `_loob` | The inner world: one raymarcher with a swelling sea (heightfield secant trace), floating islands, a night-to-dawn sky, haze and the firefly light (`Loob`). Also `Flies`, a closed-form field of thousands of fireflies. |
 | `_self` | The protagonist: a line figure with the firefly in the chest. `chest()` is the point every dive passes through, and `lightOf(LIWANAG)` sets its brightness. |
 | `_fx` | Hit pulses (`impact`: flash, CA, shake keyed to the frame), `mergePost`, beat and bar lists, `Fill`, the dive curves with `DIVE_COL`/`towardDive` for match cuts, and a shockwave warp chunk. |
+| `_lyric` | Every sung word, set in the scene's world. A `LyricTrack` gets one or more *stagings* per line: a voice (`VOICE.loud / quiet / soft / mono`), a tone (`TONE.labas / ash / loob / lit`), a size, and a place, which can be fixed, a function of t, or per word (`wordAt`). It adds the glyphs to the scene's own `Words` batch, so the words are lit, fogged, occluded and blurred with the shot. Layouts are `flow`, `stack` and `slam`; enters are `rise`, `drop`, `slam`, `fly`, `type` and `fade`; exits are `fade`, `fall`, `fly`, `scatter`, `burst` and `none`. `skip` stages a line in parts, since skipped words take no room. Hero words that a scene draws itself are `skip`ped in the track and `LyricTrack.mark`ed where the scene draws them. `tail` holds the words still sung over a scene's opening cut at a `lens` place, where the last shot left them. `_dami_lyric` holds the chorus scenes' places (turned to the camera, laid flat on the crowd, `carry`ed across a smash cut to the same place on screen); `_mundo_lyric` writes words in fireflies. |
+
+### Lyric coverage — `render.ts lyrics`
+
+Every draw of a lyric word records how well it can be read. The score is alpha ×
+on-screen cap height (full at 18 px) × how square to the lens it is along each reading
+axis, so a word that is mirrored, upside down or seen edge-on scores 0. It is also 0 if
+any edge of the word is out of frame. `node scripts/render.ts lyrics --film mv [--only …] [--from --to]`
+renders each sung word through `window.__tahimik.probe` at start + 0.06, + 0.14 and
++ 0.26 s, halfway and 85 % of the way through any word longer than 0.6 s, and just after
+its end. A word passes if its best score is ≥ 0.6. The
+command prints the failures per scene, the total and how full the glyph atlas is (the
+lyric voices raster at 160–200 px per em into the shared 4096² atlas, while hero words
+use 320).

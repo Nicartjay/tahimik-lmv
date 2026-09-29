@@ -12,6 +12,14 @@
 // letter at a time on "ilabas". On "Pero" the letters falter and sink back into the paper,
 // the letter folds itself shut, and on "nanahimik" every note folds its wings and dives
 // back into the pocket; the camera goes with them, into the light (a DIVE into entablado).
+//
+// Every other sung word is written in the same light: "May mga" across the packed notes,
+// jumping with them until the burst scatters it; "sa dibdib" rising out of the mouth under
+// KWENTO; "Nakatupi sa bulsa ng pantalon" flying with the flock, fluttering like it;
+// "Gustong-gusto kong" breaking away with the letter and settling onto its top line as it
+// opens, "Pero" on its bottom line until the fold covers it; "nanahimik" diving back into
+// the pocket with the notes, folding itself away at the mouth; and the last "na" a shadow in
+// the light the camera dives into.
 
 import { sans } from '../../engine/fonts';
 import { FPS } from '../../engine/config';
@@ -26,6 +34,7 @@ import { add, cross, dot, len, madd, mix3, mul, norm, sub, type V3 } from '../..
 import { Words, type WordShape } from '../../engine/3d/words';
 import { beats, decay, DIVE_COL, diveOut, Fill, impact, mergePost, towardDive } from './_fx';
 import { Paper, pocket, type PocketOpts } from './_bulsa_paper';
+import { lens, LyricTrack, mixPlace, TONE, VOICE, type Place, type Tone } from './_lyric';
 import { POSE } from './_labas';
 import { Flies, Loob } from './_loob';
 import { GOLD, lightOf, Self } from './_self';
@@ -51,6 +60,10 @@ const HERO = sans(100, 800, 'extra-condensed', 4);
 const EM = 320;
 const POST: Post = { bloom: 0.9, grain: 0.035, vignette: 0.3 };
 const SHUT = Math.PI - 0.03;
+/** ink on the letter: an ember while sung, dry and dark after */
+const INK: Tone = { rest: [0.035, 0.022, 0.012], hot: [0.45, 0.1, 0.015] };
+/** the last "na": a shadow in the dive's light */
+const SHADOW: Tone = { rest: [0.08, 0.05, 0.025], hot: [0.025, 0.015, 0.008] };
 
 let loob: Loob | null = null, self: Self | null = null, fill: Fill | null = null, paper: Paper | null = null;
 let flies: Flies | null = null, lines: LineBatch | null = null;
@@ -126,6 +139,10 @@ export default class Bulsa extends Scene {
   private ilabas!: WordShape;
   private w!: Record<'may' | 'mga' | 'kwento' | 'dibdib' | 'naka' | 'bulsa' | 'gusto' | 'kong' | 'ilabas' | 'pero' | 'nana', Word>;
   private notes: Note[] = [];
+  private l!: Line[];
+  /** the sung words; and the last "na", drawn over the dive's fill */
+  private track!: LyricTrack;
+  private last!: LyricTrack;
   /** per-t values every note asks for (cleared each sub-frame) */
   private memo = new Map<number, { jolt: number; bulge: number; beat: number }>();
   private hero!: Note;
@@ -148,6 +165,7 @@ export default class Bulsa extends Scene {
     const L = this.lyrics, c: number = this.params.cut, next: number = this.params.next;
     const find = (q: string): Line => L.find(q, c - 1);
     const l1 = find('May mga kwento'), l2 = find('Nakatupi'), l3 = find('Gustong'), l4 = find('Pero nanahimik');
+    this.l = [l1, l2, l3, l4];
     this.w = {
       may: l1.words[0], mga: l1.words[1], kwento: l1.words[2], dibdib: l1.words[4],
       naka: l2.words[0], bulsa: l2.words[2], gusto: l3.words[0], kong: l3.words[1], ilabas: l3.words[2],
@@ -196,6 +214,80 @@ export default class Bulsa extends Scene {
       ...flight, [g + 0.17, [13.6, 7.8, -75.5]], [g + 0.67, [15.2, 8.3, -72.3]],
     ]);
     this.dive = spline([this.camB(nana), [13, 9.4, -60], [8, 11.8, -47], [3.2, 14.2, -35.5], [0.2, 14.3, -26.6]]);
+    this.lines(l1, l2, l3, l4);
+  }
+
+  /** every sung word but KWENTO and ILABAS, which the scene draws itself */
+  private lines(l1: Line, l2: Line, l3: Line, l4: Line) {
+    const w = this.w, g = w.gusto.start, nana = w.nana.start, ink = TONE.loob;
+    const T = (this.track = new LyricTrack(this.W));
+    const face = (pos: V3, b: Basis, size?: number): Place => ({ pos, right: b.R, up: b.U, size });
+    /** the track's own heat, for words that change tone on the way */
+    const heat = (wd: Word, t: number) => (t < wd.end ? 1 : Math.exp(-(t - wd.end) / 0.35));
+    const tint = (tn: Tone, h: number) => mix3(tn.rest, tn.hot, h) as RGB;
+    /** on the letter's page: x, y in its half-size units, just proud of the paper */
+    const page = (t: number, x: number, y: number, size: number): Place => {
+      const s = this.sheet(t), N = cross(s.R, s.U);
+      return { pos: madd(madd(madd(s.c, s.R, x * s.sc), s.U, y * s.sc), N, 0.04), right: s.R, up: s.U, size: size * s.sc };
+    };
+
+    // "May mga" rises out of the mouth like the first notes, jumping with the pile; the
+    // burst scatters it
+    T.add(l1, {
+      voice: VOICE.soft, size: 2.5, tone: ink, skip: ['kwento', 'sa', 'dibdib'],
+      at: (t) => ({ pos: [0, 18.6 + 0.3 * this.jolt(t), -22.5] }),
+      out: w.kwento.start, exit: 'scatter', exitDur: 0.3,
+    });
+    // "sa dibdib" follows KWENTO out, off to the side of the stream
+    T.add(l1, {
+      voice: VOICE.soft, size: 1.2, tone: ink, skip: ['May', 'mga', 'kwento'],
+      at: (t, b) => {
+        const u = prog(t, l1.words[3].start, w.naka.start, ease.outCubic);
+        return face([lerp(5.2, 3.4, prog(t, 85.3, 85.7, ease.inOutCubic)), 17.2 + 0.5 * u, -21.5], b);
+      },
+      out: w.naka.start + 0.05, exitDur: 0.2,
+    });
+    // flying with the flock just ahead of the lens, fluttering like the notes round it
+    T.add(l2, {
+      voice: VOICE.soft, size: 1, tone: ink, wrap: 7, enter: 'fly', travel: 2,
+      at: (t, b) => lens(b, 0.04 * Math.sin(t * 1.3), -0.4 + 0.03 * Math.sin(t * 1.7), 6, 0.095),
+      each: (_k, i, _u, t) => ({ tilt: 0.18 * Math.sin(TAU * 2.4 * t + i * 0.9), spin: 0.06 * Math.sin(TAU * 1.7 * t + i * 1.3) }),
+      out: g + 0.07, exit: 'fly', exitDur: 0.3,
+    });
+    // breaking away with the letter, and settling onto its top margin as it opens, the
+    // light drying into ink
+    const onPage = (t: number) => prog(t, g + 0.75, g + 1.1, ease.inOutCubic);
+    T.add(l3, {
+      voice: VOICE.soft, size: 0.5, tone: ink, skip: ['ilabas'],
+      at: (t, b) => mixPlace(lens(b, 0, 0.45, 7, 0.075), page(t, 0, 2, 0.52), onPage(t)),
+      each: (k, _i, _u, t) => { const h = heat(l3.words[k], t); return { col: mix3(tint(ink, h), tint(INK, h), onPage(t)) as RGB }; },
+      out: 91.2, exitDur: 0.25,
+    });
+    // on the bottom line; as the fold comes over it, it lifts off the page, the ink
+    // lighting up again, and waits for "nanahimik"
+    const offPage = (t: number) => prog(t, 91.26, 91.5, ease.inOutCubic);
+    T.add(l4, {
+      voice: VOICE.soft, size: 0.62, tone: INK, skip: ['nanahimik', 'na'],
+      at: (t, b) => mixPlace(page(t, 0, -1.9, 0.62), lens(b, 0, -0.34, 7, 0.07), offPage(t)),
+      each: (k, _i, _u, t) => { const h = heat(l4.words[k], t); return { col: mix3(tint(INK, h), tint(ink, h), offPage(t)) as RGB }; },
+      settle: 0.12, out: nana - 0.04, exitDur: 0.1,
+    });
+    // diving back into the pocket with the notes, folding itself away at the mouth
+    const from = madd(madd(S0, SN, 1.2), SU, -0.6), via: V3 = [8, 14, -45], nest: V3 = [0, 15.6, -23.4];
+    T.add(l4, {
+      voice: VOICE.soft, size: 1, tone: ink, skip: ['Pero', 'na'],
+      at: (t, b) => face(bez(from, via, nest, prog(t, nana, 92.9, ease.inQuad)), b),
+      each: (_k, i, _u, t) => {
+        const f = prog(t, 92.62 + 0.03 * i, 92.9 + 0.03 * i, ease.inCubic);
+        return { tilt: f * 1.5, scale: 1 - 0.6 * f, alpha: 1 - smoothstep(0.5, 1, f) };
+      },
+      out: 93, exitDur: 0.05,
+    });
+    // "na lang": shadows in the light, held through the cut, where entablado takes up the line
+    this.last = new LyricTrack(this.W).add(l4, {
+      voice: VOICE.soft, size: 1, tone: SHADOW, skip: ['Pero', 'nanahimik'], enter: 'fade', settle: 0.04,
+      at: (t, b) => lens(b, 0, 0.02, 2.2, 0.3), out: (this.params.next as number) + 0.1, exit: 'none',
+    });
   }
 
   // ---------------------------------------------------------------- the flock
@@ -417,6 +509,8 @@ export default class Bulsa extends Scene {
     // KWENTO out of the pocket after the notes; ILABAS up off the page
     const W = this.W.clear();
     const kc = w.kwento.c, kwW = (this.kwento.w * KW_H) / EM;
+    /** how far each hero word's letters have arrived, for the lyric marks */
+    const seen = { kw: [0, 0, 0], il: [0, 0, 0] };
     if (t > kw - 0.1 && t < w.naka.start + 0.6) {
       const mouth: V3 = [0, 16.2, -24];
       W.word(this.kwento, {
@@ -428,9 +522,13 @@ export default class Bulsa extends Scene {
           const sgn = hash(i, 13) < 0.5 ? -1 : 1;
           const fd = prog(t, w.naka.start - 0.05 + 0.04 * i, w.naka.start + 0.3 + 0.04 * i, ease.inOutCubic);
           const thump = 0.09 * knock(t - w.dibdib.start) + 0.05 * knock(t - (w.dibdib.c[3] ?? w.dibdib.start + 0.3));
+          const scale = (0.25 + 0.75 * ease.outBack(prog(t, t0, t0 + 0.3))) * (1 + thump) * (1 - 0.3 * fd);
+          seen.kw[0] += smoothstep(0.5, 1, k) * (1 - smoothstep(0.75, 1, fd));
+          seen.kw[1] += scale;
+          seen.kw[2]++;
           return {
             off: add(mul(sub(mouth, homeP), 1 - k), [0, 2.2 * Math.sin(Math.PI * k), 0]),
-            scale: (0.25 + 0.75 * ease.outBack(prog(t, t0, t0 + 0.3))) * (1 + thump) * (1 - 0.3 * fd),
+            scale,
             spin: (1 - k) * sgn * 2.5, tilt: sgn * fd * Math.PI * 0.5,
             col: mul(mix3(mul(GOLD, light * 2.4), mul(COOL, 1.1), smoothstep(0.2, 0.9, k)) as RGB, 1 + 1.2 * decay(t, [kc[i] ?? kw], 0.12)),
             alpha: 1 - smoothstep(0.75, 1, fd),
@@ -449,6 +547,9 @@ export default class Bulsa extends Scene {
           const falter = 1 - 0.2 * prog(t, w.pero.start, w.pero.start + 0.3, ease.outCubic);
           const sink = prog(t, 91.2 + 0.02 * i, 91.45 + 0.02 * i, ease.inCubic);
           const shiver = 0.05 * prog(t, w.pero.start, w.pero.start + 0.1);
+          seen.il[0] += prog(t, t0, t0 + 0.08) * (1 - smoothstep(0.6, 1, sink));
+          seen.il[1] += (0.05 + 2.1 * k * falter) * (1 - sink);
+          seen.il[2]++;
           return {
             off: add(mul(SN, (0.05 + 2.1 * k * falter) * (1 - sink)), [noise1(t * 23, i) * shiver, noise1(t * 19, i + 7) * shiver, 0]),
             spin: noise1(t * 17, i + 3) * shiver * 2,
@@ -458,11 +559,23 @@ export default class Bulsa extends Scene {
         },
       });
     }
+    const nKw = this.kwento.glyphs.length, nIl = this.ilabas.glyphs.length;
+    if (seen.kw[2]) LyricTrack.mark(this.l[0], w.kwento, b, KW_POS, [1, 0, 0], (KW_H * seen.kw[1]) / seen.kw[2], this.kwento, seen.kw[0] / nKw);
+    if (seen.il[2]) {
+      const pos = madd(madd(this.sheetC(t), SU, 0.25), SN, seen.il[1] / seen.il[2]);
+      LyricTrack.mark(this.l[2], w.ilabas, b, pos, SR, IL_H, this.ilabas, seen.il[0] / nIl, SU);
+    }
+    this.track.draw(t, b);
     W.draw(out, b, { depth, nearFade: 0.5 });
 
     // all light by the last frame, so both sides of the cut are the same gold
     const k = diveOut(t, next - 1 / FPS, 0.5);
     fill!.draw(out, DIVE_COL, k, 'over');
+    if (t > this.l[3].words[2].start - 0.05) {
+      W.clear();
+      this.last.draw(t, b);
+      W.draw(out, b, { depth, nearFade: 0.5 });
+    }
 
     const hits = mergePost(
       impact(t, [kw], { flash: 0.3, ca: 1, shake: 14, seed: 1 }),

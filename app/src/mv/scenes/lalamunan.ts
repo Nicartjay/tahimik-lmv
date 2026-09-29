@@ -2,13 +2,20 @@
 // throat and jams at a knot that won't open.
 //
 // Opens out of the chest light (a dive), pulling back up the throat; on "sagot" the five
-// letters burst out of the light single file, whoosh past the lens and the camera whips
+// letters burst out of the light side by side, whoosh past the lens and the camera whips
 // round to chase them up the throat. On "Pero" they crash into the knot; it clenches a notch
 // on every beat, they strain forward on "makalusot", and on "lalamunan" the whole throat
 // clamps. On "Nagpapaliban" the knot slams shut, the letters are blown back past us, the
 // flow reverses and MAMAYA is stamped on the shut knot (NA on "na"); on "naman" the camera
 // is sucked back down the throat in a corkscrew; on "Baka pagtawanan lang" laughter echoes
 // down it as rings. Ends hard on dami's impact.
+//
+// Every other sung word rides the throat too: "May" rises out of the light and SAGOT bursts
+// through it; "na sa isipan" rushes up ahead of the chase, slower than it, so the camera
+// flies through each word; "Pero", "’di makalusot" and "sa lalamunan" fly up and jam in rows
+// against the knot, knocked with the letters on every beat; "Nagpapaliban" is shoved back
+// down at us as the knot shuts; "naman" is sucked down with the camera and "Baka pagtawanan
+// lang" shakes with each laugh.
 
 import { sans } from '../../engine/fonts';
 import type { RT } from '../../engine/gl';
@@ -17,23 +24,24 @@ import type { RGB } from '../../engine/palette';
 import { Scene, type Frame, type Post } from '../../engine/scene';
 import { clamp, ease, hash, keys, lerp, noise1, prog, smoothstep, spring, TAU } from '../../engine/util';
 import { basis, handheld, type Basis, type Cam } from '../../engine/3d/camera';
-import { add, mul, norm, rotY, sub, type V3 } from '../../engine/3d/math';
+import { add, dot, mul, norm, rotY, sub, type V3 } from '../../engine/3d/math';
 import { Words, type WordShape } from '../../engine/3d/words';
 import { beats, decay, DIVE_COL, diveIn, Fill, impact, mergePost, towardDive } from './_fx';
 import { POSE } from './_labas';
 import { axisAt, Motes, Throat } from './_lalamunan_throat';
+import { lens, LyricTrack, see, VOICE, type Place, type Tone } from './_lyric';
 import { lightOf, Self } from './_self';
 
 /** the knot, metres up the throat from the chest light */
 const SK = 90;
-/** each letter leaves the light this long after the one before */
-const LAG = 0.06;
 /** where each letter of SAGOT comes to rest against the knot */
 const JAM = [SK - 2.15, SK - 2.5, SK - 2.25, SK - 2.6, SK - 2.3];
 /** the sign on the shut knot */
 const SIGN_S = SK - 2.2;
 const COOL: RGB = [0.8, 0.9, 1.0];
 const HERO = sans(100, 800, 'extra-condensed', 4);
+/** the sung words: the body's cool, not the loob's gold */
+const THROAT: Tone = { rest: mul(COOL, 0.6), hot: mul(COOL, 1.15) };
 
 let throat: Throat | null = null, motes: Motes | null = null, self: Self | null = null, fill: Fill | null = null;
 
@@ -46,6 +54,8 @@ export default class Lalamunan extends Scene {
   private letters: WordShape[] = [];
   private sign!: { mamaya: WordShape; na: WordShape };
   private w!: Record<'sagot' | 'pero' | 'makalusot' | 'lalamunan' | 'nag' | 'na' | 'naman' | 'baka' | 'pagtawanan' | 'lang', Word>;
+  private l!: Line[];
+  private track!: LyricTrack;
   /** SAGOT's flight: s = fly(x) since "sagot", its late acceleration, each letter's crash time */
   private accel = 0;
   private crash: number[] = [];
@@ -60,6 +70,7 @@ export default class Lalamunan extends Scene {
     const L = this.lyrics, c: number = this.params.cut;
     const find = (q: string): Line => L.find(q, c - 1);
     const l1 = find('May sagot'), l2 = find('makalusot'), l3 = find('Nagpapaliban'), l4 = find('pagtawanan');
+    this.l = [l1, l2, l3, l4];
     this.w = {
       sagot: Lyrics.word(l1, 'sagot'), pero: l2.words[0], makalusot: Lyrics.word(l2, 'makalusot'),
       lalamunan: Lyrics.word(l2, 'lalamunan'), nag: l3.words[0], na: l3.words[1], naman: l3.words[2],
@@ -77,11 +88,91 @@ export default class Lalamunan extends Scene {
         const m = (a + b) / 2;
         if (this.fly(m) < j) a = m; else b = m;
       }
-      return this.w.sagot.start + LAG * i + a;
+      return this.w.sagot.start + a;
     });
     this.beatsJam = beats(this.audio, this.w.pero.start + 0.15, this.w.nag.start - 0.1);
     const pw = this.w.pagtawanan;
     this.laughs = [this.w.baka.start, pw.c[0] ?? pw.start, pw.c[3] ?? pw.start + 0.3, pw.c[5] ?? pw.start + 0.55, pw.c[7] ?? pw.start + 0.8, this.w.lang.start];
+    this.track = this.lines(l1, l2, l3, l4);
+  }
+
+  /** every sung word but SAGOT and NA, which the scene draws itself */
+  private lines(l1: Line, l2: Line, l3: Line, l4: Line) {
+    const w = this.w, T = new LyricTrack(this.W), tn = w.nag.start;
+    const face = (pos: V3, b: Basis): Place => ({ pos, right: b.R, up: b.U });
+    // down the throat from the knot: towards us
+    const back = norm(sub(axisAt(SK - 4), axisAt(SK - 3)));
+    const jolt = (t: number) => { let k = 0; for (const tb of this.beatsJam) k += knock(t - tb); return k; };
+
+    // "May" rises out of the light below us, and SAGOT bursts through it
+    T.add(l1, {
+      voice: VOICE.soft, size: 0.7, tone: THROAT, skip: ['sagot', 'na', 'sa', 'isipan'],
+      at: (t, b) => face(add(axisAt(1.2 + 6 * (t - l1.words[0].start)), [0, 0.7, 0]), b),
+      out: w.sagot.start + 0.05, exit: 'scatter', exitDur: 0.25,
+    });
+    // "na sa isipan" rushes up the throat ahead of the chase, but slower: the camera
+    // catches each word up and flies through it
+    const AHEAD = [[5.5, 6, -0.7, 0.95], [7, 6.5, 0.75, 0.95], [7.5, 4.2, 0, 1.2]]; // metres ahead, closing m/s, x, y
+    const ahead = (k: number, t: number) => AHEAD[k - 2][0] - AHEAD[k - 2][1] * Math.max(0, t - l1.words[k].start);
+    T.add(l1, {
+      voice: VOICE.soft, size: 0.47, tone: THROAT, skip: ['May', 'sagot'], at: { pos: axisAt(0) },
+      wordAt: (k, t, b) => face(add(axisAt(this.camS(t) + ahead(k, t)), [AHEAD[k - 2][2], AHEAD[k - 2][3], 0]), b),
+      each: (k, _i, _u, t) => ({ alpha: smoothstep(0.9, 1.8, ahead(k, t)) }),
+      out: w.pero.start - 0.1, exit: 'fly',
+    });
+
+    // piled up in the throat behind the letters, in rows above and below them: knocked
+    // back on every beat, straining forward on "makalusot", crushed as the throat clamps on
+    // "lalamunan"; as the camera creeps up it presses the pile into the knot
+    const sq = (t: number) => clamp(this.knot(t));
+    const row = (s0: number, y0: number, y1: number, size: number) => (t: number, b: Basis): Place => {
+      const k = sq(t), c = this.camS(t) + 4;
+      const s = Math.min(SK - 2.75, (s0 + c + Math.hypot(s0 - c, 1)) / 2);
+      return { ...face(add(axisAt(s), [0, lerp(y0, y1, k), 0]), b), size: size * lerp(1, 0.8, k) };
+    };
+    const jam = (strain: number) => (_k: number, i: number, _u: number, t: number) => {
+      const m = w.makalusot;
+      const st = strain * smoothstep(m.start, m.start + 0.25, t) * (1 - smoothstep(m.end - 0.3, m.end, t)) * (0.6 + 0.4 * noise1(t * 9, i));
+      const kn = jolt(t) + 1.4 * knock(t - w.lalamunan.start);
+      return { off: mul(back, 0.3 * kn - st), spin: noise1(t * 14, i + 20) * 0.05 * (1 + 3 * kn) + (hash(i, 7) - 0.5) * 0.25 * sq(t) };
+    };
+    T.add(l2, {
+      voice: VOICE.soft, size: 0.65, tone: THROAT, skip: ['’di', 'makalusot', 'sa', 'lalamunan'],
+      at: row(79.5, 0.7, 0.6, 0.65), enter: 'slam', each: jam(0), out: 35.02, exit: 'scatter', exitDur: 0.25,
+    });
+    T.add(l2, {
+      voice: VOICE.soft, size: 0.45, tone: THROAT, skip: ['Pero', 'sa', 'lalamunan'],
+      at: row(80, -0.55, -0.5, 0.45), enter: 'fly', travel: 4, each: jam(0.45), out: tn - 0.04, exit: 'fly', exitDur: 0.26,
+    });
+    T.add(l2, {
+      voice: VOICE.soft, size: 0.45, tone: THROAT, skip: ['Pero', '’di', 'makalusot'],
+      at: row(83, 0.76, 0.58, 0.45), enter: 'fly', travel: 4, each: jam(0), out: tn - 0.02, exit: 'fly', exitDur: 0.26,
+    });
+
+    // the knot slams shut and shoves "Nagpapaliban" back down at us, under MAMAYA
+    T.add(l3, {
+      voice: VOICE.soft, size: 0.3, tone: THROAT, skip: ['na', 'naman'], enter: 'slam',
+      at: (t, b) => face(add(axisAt(SK - 2.7 - 0.9 * ease.outExpo(prog(t, tn, tn + 0.3))), [0, -0.1, 0]), b),
+      out: w.na.start - 0.02, exit: 'fly', exitDur: 0.4,
+    });
+    // "naman" is sucked back down the throat with us, riding just ahead of the lens
+    T.add(l3, {
+      voice: VOICE.soft, size: 0.42, tone: THROAT, skip: ['Nagpapaliban', 'na'],
+      at: (t, b) => face(add(axisAt(this.camS(t) + 2.5 - 0.5 * prog(t, w.naman.start, w.naman.end)), mul(b.U, 0.75)), b),
+      out: w.naman.end + 0.05, exit: 'fly', exitDur: 0.35,
+    });
+    // the fear, small and level through the corkscrew, shaking with each laugh
+    T.add(l4, {
+      voice: VOICE.quiet, size: 1, tone: THROAT, spread: 0.15, settle: 0.14,
+      at: (t, b) => lens(b, 0, -0.08, lerp(4, 2.6, prog(t, w.baka.start, this.params.next)), 0.085),
+      each: (k, i, _u, t) => {
+        let j = 0;
+        for (const t0 of this.laughs) j += knock(t - t0);
+        return { scale: 1 + 0.1 * j, tilt: noise1(t * 7, i + 10 * k) * 0.12 * j };
+      },
+      out: this.params.next + 0.1,
+    });
+    return T;
   }
 
   /** the letters' flight up the throat, x seconds after leaving the light (without the late push) */
@@ -128,19 +219,21 @@ export default class Lalamunan extends Scene {
 
   /** letter i: throat s, lateral offset, spin, tilt, scale, alpha */
   private letter(i: number, t: number) {
-    const w = this.w, x = t - LAG * i - w.sagot.start;
+    const w = this.w, x = t - w.sagot.start;
     const tb = w.nag.start + 0.025 * i;
     if (x < 0) return null;
     const home = (i - 2) * 0.62;
     if (t < this.crash[i]) {
-      // single file out of the light, then fanning out into the word
-      const form = smoothstep(0.25, 0.9, x), a = i * 1.26 + x * 9, r = 0.45 * (1 - form);
+      // out of the light together, fanning straight out into the word; until the whip
+      // turns us round they are seen from above, so they are laid out mirrored to read
+      const form = smoothstep(0, 0.1, x), a = i * 1.26 + x * 9, r = 0.45 * (1 - form);
+      const side = lerp(-1, 1, smoothstep(0.22, 0.42, x));
       const lat: [number, number] = [
-        lerp(Math.cos(a) * r, home, form) + noise1(t * 1.5, i) * 0.12 * form,
+        side * (lerp(Math.cos(a) * r, home, form) + noise1(t * 1.5, i) * 0.12 * form),
         Math.sin(a) * r + noise1(t * 1.3, i + 9) * 0.1 * form,
       ];
       const sgn = hash(i, 5) < 0.5 ? -1 : 1;
-      return { s: this.fly(x), lat, spin: (1 - form) * sgn * x * 9, tilt: (1 - form) * x * 5 * sgn, scale: ease.outBack(clamp(x / 0.22)), a: 1 };
+      return { s: this.fly(x), lat, spin: (1 - form) * sgn * x * 9, tilt: (1 - form) * x * 5 * sgn, scale: ease.outBack(clamp(x / 0.12)), a: 1, form };
     }
     const jam = (tt: number) => {
       const xc = tt - this.crash[i];
@@ -161,7 +254,7 @@ export default class Lalamunan extends Scene {
         spin: (hash(i, 8) - 0.5) * 0.5 * sq + noise1(t * 14, i * 3) * 0.08 * (1 + 3 * kn),
         tilt: (hash(i, 9) - 0.5) * 0.6 * sq,
         scale: lerp(1, 0.74, sq) * (1 - 0.1 * kn),
-        a: 1,
+        a: 1, form: 1,
       };
     }
     // blown back past the camera, tumbling, scattering to the walls
@@ -170,7 +263,7 @@ export default class Lalamunan extends Scene {
     return {
       s: s0 - 34 * (1 - Math.exp(-u / 0.8)),
       lat: [home * 0.66 + Math.cos(ang) * 1.3 * out, Math.sin(ang) * 1.1 * out] as [number, number],
-      spin: sgn * u * 9, tilt: sgn * u * 6, scale: 0.74, a: 1 - smoothstep(0.9, 1.6, u),
+      spin: sgn * u * 9, tilt: sgn * u * 6, scale: 0.74, a: 1 - smoothstep(0.9, 1.6, u), form: 0,
     };
   }
 
@@ -234,6 +327,26 @@ export default class Lalamunan extends Scene {
     return out.sort((a, b) => b[3] - a[3]).map(([s, a, g]) => [s, a, g] as [number, number, number]);
   }
 
+  /** SAGOT, spread over its five letters, for the lyric audit */
+  private markSagot(Ls: ReturnType<Lalamunan['letter']>[], b: Basis) {
+    let n = 0, a = 0, form = 1, h = 0, pos: V3 = [0, 0, 0];
+    const ps = Ls.map((l) => (l ? add(axisAt(l.s), [l.lat[0], l.lat[1], 0]) : null));
+    Ls.forEach((l, i) => { if (l && ps[i]) { n++; a += l.a; form = Math.min(form, l.form); h += 0.95 * l.scale; pos = add(pos, ps[i]!); } });
+    if (n < 5) return;
+    pos = mul(pos, 1 / n);
+    h /= n;
+    // the word's extent along the lens's reading axis, in its em
+    let lo = Infinity, hi = -Infinity;
+    Ls.forEach((l, i) => {
+      const x = dot(sub(ps[i]!, pos), b.R), half = (this.letters[i].w / this.letters[i].r) * 0.95 * l!.scale / 2;
+      lo = Math.min(lo, x - half);
+      hi = Math.max(hi, x + half);
+    });
+    // mirrored (S right of T on screen) reads as nothing
+    const order = dot(sub(ps[4]!, ps[0]!), b.R) > 0 ? 1 : 0;
+    see(this.l[0], this.l[0].words.indexOf(this.w.sagot), b, pos, b.R, b.U, h, (hi - lo) / h, (a / n) * form * order);
+  }
+
   render(f: Frame, out: RT): Post {
     const t = f.t, w = this.w, cut: number = this.params.cut;
     const { c, s: camS } = this.camera(t);
@@ -272,6 +385,7 @@ export default class Lalamunan extends Scene {
         each: () => ({ spin: l.spin, tilt: l.tilt }),
       });
     });
+    this.markSagot(Ls, b);
     // MAMAYA stamped on the shut knot, NA under it on "na"
     for (const [shape, t0, dy] of [[this.sign.mamaya, w.nag.start, 0.27], [this.sign.na, w.na.start, -0.36]] as const) {
       if (t < t0) continue;
@@ -281,7 +395,9 @@ export default class Lalamunan extends Scene {
         col: mul(COOL, 1.35 + 1.5 * decay(t, [t0], 0.1)), alpha: prog(t, t0, t0 + 0.05),
         each: (gi) => ({ spin: (hash(gi, dy > 0 ? 3 : 4) - 0.5) * 0.12, off: [0, (hash(gi, 6) - 0.5) * 0.04, 0] }),
       });
+      if (shape === this.sign.na) LyricTrack.mark(this.l[2], w.na, b, add(axisAt(SIGN_S), [0, dy, 0]), [1, 0, 0], 0.55 * (1.5 - 0.5 * k), shape, prog(t, t0, t0 + 0.05));
     }
+    this.track.draw(t, b);
     W.draw(out, b, { depth, nearFade: 0.5 });
 
     const kDive = diveIn(t, cut, 0.6);
