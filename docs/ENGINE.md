@@ -114,8 +114,8 @@ A locked-off frame stops at 12 samples and a whip runs to its scene's `maxSample
 (default 108). Post settings come from the first sample, so a frame never depends on
 where the loop stopped. Cuts sit exactly on frame boundaries, so a shutter never
 straddles one. NaN and Inf sub-frames are dropped. Across the whole music video the loop
-averages ~40 samples a frame, and the 1080p60 export runs at ~3.9 fps on an M4 (12 895
-frames in 55 min).
+averages ~39 samples a frame, and the 1080p60 export runs at ~4.2 fps on an M4 (12 895
+frames in 52 min).
 
 Only the scene is blurred. Post shake and zoom are not, so every fast move in the music
 video is a camera move inside the scene.
